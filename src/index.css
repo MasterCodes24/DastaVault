@@ -1,0 +1,59 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply font-body bg-paper text-ink-900 antialiased;
+}
+
+::selection {
+  background: #22d9ce;
+  color: #0f1b3c;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #b2bada;
+  border-radius: 8px;
+}
+
+:focus-visible {
+  outline: 2px solid #22d9ce;
+  outline-offset: 2px;
+}
+
+.chain-bg {
+  background-image: radial-gradient(circle, rgba(223, 227, 238, 0.9) 1.4px, transparent 1.6px);
+  background-size: 16px 16px;
+}
+
+.chain-bg-dark {
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.12) 1.4px, transparent 1.6px);
+  background-size: 16px 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
