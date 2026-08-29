@@ -19,11 +19,11 @@ export default function DocumentUpload({
   extraFields = [],
   accentIcon: AccentIcon = UploadCloud,
 }) {
-  const { currentUser, uploadDocument, createCase, notify } = useApp();
+  const { currentUser, uploadDocument, createCase, notify, verifyDocument } = useApp();
   const [documentName, setDocumentName] = useState("");
   const [docType, setDocType] = useState(DOC_TYPES[0]);
   const [caseId, setCaseId] = useState(cases[0]?.id || "");
-  const [fileName, setFileName] = useState("");
+  const [fileObj, setFileObj] = useState(null);   // stores the actual File object
   const [extra, setExtra] = useState({});
   const [creatingNew, setCreatingNew] = useState(false);
   const [newCnr, setNewCnr] = useState("");
@@ -32,14 +32,14 @@ export default function DocumentUpload({
   const resetForm = () => {
     setDocumentName("");
     setDocType(DOC_TYPES[0]);
-    setFileName("");
+    setFileObj(null);
     setExtra({});
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!documentName.trim()) return notify("Document name is required.", "warn");
-    if (!fileName.trim()) return notify("Please choose a file to upload.", "warn");
+    if (!fileObj) return notify("Please choose a file to upload.", "warn");
 
     for (const f of extraFields) {
       if (f.required && f.type !== "checkbox" && !extra[f.key]?.toString().trim()) {
@@ -54,18 +54,19 @@ export default function DocumentUpload({
     if (creatingNew) {
       if (!newCnr.trim() || !newTitle.trim())
         return notify("CNR number and case title are required to create a folder.", "warn");
-      const created = createCase({ cnrNumber: newCnr, title: newTitle, creatorId: currentUser.id });
+      const created = await createCase({ cnrNumber: newCnr, title: newTitle, type: "General", creatorId: currentUser.id });
+      if (!created) return;
       targetCaseId = created.id;
     }
 
     if (!targetCaseId) return notify("Please select a target case folder.", "warn");
 
-    uploadDocument({
+    await uploadDocument({
       caseId: targetCaseId,
       documentName: extra.expertName ? `${documentName}` : documentName,
       docType,
       uploadedBy: currentUser.id,
-      fileName,
+      file: fileObj,              // pass actual File object to the context
     });
     resetForm();
     setCreatingNew(false);
@@ -121,11 +122,11 @@ export default function DocumentUpload({
           <Label>File *</Label>
           <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-line bg-ink-50/50 px-4 py-3 text-sm text-ink-500 transition hover:border-vault-cyan hover:bg-vault-cyan/5">
             <FilePlus2 size={16} className="shrink-0 text-ink-400" />
-            <span className="truncate">{fileName || "Click to choose a file (simulated — no upload occurs)"}</span>
+            <span className="truncate">{fileObj ? fileObj.name : "Click to choose a file"}</span>
             <input
               type="file"
               className="hidden"
-              onChange={(e) => setFileName(e.target.files?.[0]?.name || "")}
+              onChange={(e) => setFileObj(e.target.files?.[0] || null)}
             />
           </label>
         </div>

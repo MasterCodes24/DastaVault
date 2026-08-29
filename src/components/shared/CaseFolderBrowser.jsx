@@ -1,12 +1,12 @@
 import React, { useMemo, useState } from "react";
-import { Search, Folder, FileText, ChevronRight, ArrowLeft, User2 } from "lucide-react";
+import { Search, Folder, FileText, ChevronRight, ArrowLeft, User2, ShieldCheck } from "lucide-react";
 import { useApp } from "../../context/AppContext";
 import Badge, { statusTone } from "./Badge";
 import CaseTrackingProgress from "./CaseTrackingProgress";
 import { formatDateTime } from "../../utils/format";
 
 export default function CaseFolderBrowser({ cases, title = "Case Folders", extraPanel }) {
-  const { getCaseDocuments, getUserById } = useApp();
+  const { getCaseDocuments, getUserById, verifyDocument } = useApp();
   const [query, setQuery] = useState("");
   const [docQuery, setDocQuery] = useState("");
   const [activeCaseId, setActiveCaseId] = useState(null);
@@ -102,6 +102,16 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
                         </p>
                       </div>
                       <Badge tone="neutral">{d.docType}</Badge>
+                      {d.documentId && (
+                        <button
+                          onClick={() => verifyDocument(d.documentId)}
+                          title="Verify document integrity against blockchain record"
+                          className="flex items-center gap-1 rounded-lg border border-vault-cyan/30 bg-vault-cyan/10 px-2.5 py-1.5 text-xs font-semibold text-vault-cyanDark transition hover:bg-vault-cyan/20"
+                        >
+                          <ShieldCheck size={13} />
+                          Verify
+                        </button>
+                      )}
                     </li>
                   );
                 })}

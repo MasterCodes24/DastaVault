@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useMemo } from "react";
 import { seedUsers, seedCases, seedDocuments, ROLES } from "../data/mockData";
+import { apiCreateCase, apiUploadDocument, apiVerifyDocument } from "../api/apiClient";
 
 const AppContext = createContext(null);
 
@@ -88,29 +89,40 @@ export function AppProvider({ children }) {
 
   // ---------- CASES ----------
   const createCase = useCallback(
-    ({ cnrNumber, title, creatorId, efir }) => {
-      const newCase = {
-        id: nextId("c"),
-        cnrNumber,
-        title,
-        status: efir ? "e-FIR Registered" : "Open",
-        assignedUsers: creatorId ? [creatorId] : [],
-        progressStage: efir ? 1 : 0,
-        milestoneDates: {
-          efir: efir ? new Date().toISOString() : null,
-          forensics: null,
-          lawyers: null,
-          hearings: null,
+    async ({ cnrNumber, title, type = "General", description = "", creatorId, efir }) => {
+      try {
+        // Call the real backend API
+        const backendCase = await apiCreateCase({ title, type, description });
+        // Build the local case shape — merge backend ID + frontend-only fields
+        const newCase = {
+          id: backendCase.caseId,          // use backend's "CASE-2026-xxx" as the local id
+          backendId: backendCase.caseId,   // keep explicit reference for upload URL
+          cnrNumber,                        // frontend-only field, stored locally
+          title: backendCase.title,
+          type: backendCase.type,
+          description: backendCase.description || "",
+          status: efir ? "e-FIR Registered" : "REGISTERED",
+          assignedUsers: creatorId ? [creatorId] : [],
+          progressStage: efir ? 1 : 0,
+          milestoneDates: {
+            efir: efir ? new Date().toISOString() : null,
+            forensics: null,
+            lawyers: null,
+            hearings: null,
+            verdict: null,
+          },
+          courtDates: [],
           verdict: null,
-        },
-        courtDates: [],
-        verdict: null,
-        efir: efir || null,
-        notes: [],
-      };
-      setCases((prev) => [newCase, ...prev]);
-      notify("Case folder created.");
-      return newCase;
+          efir: efir || null,
+          notes: [],
+        };
+        setCases((prev) => [newCase, ...prev]);
+        notify("Case folder created and saved to database.");
+        return newCase;
+      } catch (err) {
+        notify(err.message || "Failed to create case. Is the backend running?", "danger");
+        return null;
+      }
     },
     [notify]
   );
@@ -212,33 +224,67 @@ export function AppProvider({ children }) {
 
   // ---------- DOCUMENTS ----------
   const uploadDocument = useCallback(
-    ({ caseId, documentName, docType, uploadedBy, fileName }) => {
-      const newDoc = {
-        id: nextId("d"),
-        caseId,
-        documentName,
-        docType,
-        uploadedBy,
-        uploadedAt: new Date().toISOString(),
-        fileUrl: "#",
-        fileName: fileName || `${documentName}.pdf`,
-      };
-      setDocuments((prev) => [newDoc, ...prev]);
+    async ({ caseId, documentName, docType, uploadedBy, file }) => {
+      try {
+        // The backend expects the backend caseId ("CASE-2026-xxx") in the URL
+        // caseId here is the local case id which we set to backendId on creation
+        const result = await apiUploadDocument({
+          caseId,                   // e.g. "CASE-2026-1234567890"
+          title: documentName,
+          documentType: docType,
+          file,                     // actual File object from the file input
+        });
+        const backendDoc = result.document;
+        const newDoc = {
+          id: backendDoc.documentId,       // backend's "DOC-xxx"
+          documentId: backendDoc.documentId,
+          caseId,
+          documentName,
+          docType,
+          uploadedBy,
+          uploadedAt: backendDoc.createdAt || new Date().toISOString(),
+          fileUrl: "#",
+          fileName: file.name,
+          hash: backendDoc.hash,
+        };
+        setDocuments((prev) => [newDoc, ...prev]);
+        setCases((prev) =>
+          prev.map((c) => {
+            if (c.id !== caseId) return c;
+            let progressStage = c.progressStage;
+            let milestoneDates = { ...c.milestoneDates };
+            if (docType === "Forensic Report" && progressStage < 2) {
+              progressStage = 2;
+              milestoneDates.forensics = milestoneDates.forensics || new Date().toISOString();
+            }
+            return { ...c, progressStage, milestoneDates };
+          })
+        );
+        notify("Document uploaded and registered on blockchain.");
+        return newDoc;
+      } catch (err) {
+        notify(err.message || "Upload failed. Is the backend running?", "danger");
+        return null;
+      }
+    },
+    [notify]
+  );
 
-      setCases((prev) =>
-        prev.map((c) => {
-          if (c.id !== caseId) return c;
-          let progressStage = c.progressStage;
-          let milestoneDates = { ...c.milestoneDates };
-          if (docType === "Forensic Report" && progressStage < 2) {
-            progressStage = 2;
-            milestoneDates.forensics = milestoneDates.forensics || new Date().toISOString();
-          }
-          return { ...c, progressStage, milestoneDates };
-        })
-      );
-      notify("Document uploaded successfully.");
-      return newDoc;
+  // ---------- VERIFY DOCUMENT ----------
+  const verifyDocument = useCallback(
+    async (documentId) => {
+      try {
+        const result = await apiVerifyDocument(documentId);
+        if (result.verified) {
+          notify("✅ Document verified — integrity confirmed, not tampered.", "success");
+        } else {
+          notify("⚠️ TAMPERED — hash mismatch detected! Document may be compromised.", "danger");
+        }
+        return result;
+      } catch (err) {
+        notify(err.message || "Verification failed.", "danger");
+        return null;
+      }
     },
     [notify]
   );
@@ -278,6 +324,7 @@ export function AppProvider({ children }) {
       addCaseNote,
       uploadVerdict,
       uploadDocument,
+      verifyDocument,
       getUserById,
       getCaseDocuments,
       getCasesForUser,
@@ -303,6 +350,7 @@ export function AppProvider({ children }) {
       addCaseNote,
       uploadVerdict,
       uploadDocument,
+      verifyDocument,
       getUserById,
       getCaseDocuments,
       getCasesForUser,

@@ -63,6 +63,8 @@ function EfirPortal({ onCreated }) {
   const [showCreate, setShowCreate] = useState(false);
   const [cnr, setCnr] = useState("");
   const [title, setTitle] = useState("");
+  const [caseType, setCaseType] = useState("");
+  const [description, setDescription] = useState("");
 
   const handleFetch = (e) => {
     e.preventDefault();
@@ -74,20 +76,26 @@ function EfirPortal({ onCreated }) {
     }, 700);
   };
 
-  const handleCreate = (e) => {
+  const handleCreate = async (e) => {
     e.preventDefault();
-    if (!cnr.trim() || !title.trim()) return notify("CNR number and case title are required.", "warn");
-    createCase({
+    if (!cnr.trim() || !title.trim() || !caseType.trim())
+      return notify("CNR number, case title and case type are required.", "warn");
+    const created = await createCase({
       cnrNumber: cnr,
       title,
+      type: caseType,
+      description,
       creatorId: currentUser.id,
       efir: { number: preview.number, firDate: preview.date },
     });
+    if (!created) return; // API failed — error toast already shown by context
     setPreview(null);
     setFirNumber("");
     setShowCreate(false);
     setCnr("");
     setTitle("");
+    setCaseType("");
+    setDescription("");
     onCreated();
   };
 
@@ -182,6 +190,14 @@ function EfirPortal({ onCreated }) {
             <div>
               <Label>Case Title *</Label>
               <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. State vs. John Doe" />
+            </div>
+            <div>
+              <Label>Case Type *</Label>
+              <Input value={caseType} onChange={(e) => setCaseType(e.target.value)} placeholder="e.g. Theft, Fraud, Homicide" />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Brief description (optional)" />
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-3">
