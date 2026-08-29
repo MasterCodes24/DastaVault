@@ -8,6 +8,7 @@ import {
   CalendarClock,
   FileSignature,
   FlaskConical,
+  UserCog,
   LogOut,
   Menu,
   X,
@@ -20,6 +21,7 @@ const NAV_BY_ROLE = {
   [ROLES.ADMIN]: [
     { key: "approvals", label: "Pending Approvals", icon: ShieldCheck },
     { key: "vault", label: "Master Case Vault", icon: FolderLock },
+    { key: "access", label: "Case Access Control", icon: UserCog },
   ],
   [ROLES.POLICE]: [
     { key: "efir", label: "e-FIR Portal", icon: FileSignature },

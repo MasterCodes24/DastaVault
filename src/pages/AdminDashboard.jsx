@@ -5,6 +5,7 @@ import DashboardLayout from "../components/layout/DashboardLayout";
 import Badge from "../components/shared/Badge";
 import { Button } from "../components/shared/Field";
 import CaseFolderBrowser from "../components/shared/CaseFolderBrowser";
+import CaseAccessManager from "../components/shared/CaseAccessManager";
 
 export default function AdminDashboard() {
   const { users, cases, approveUser, rejectUser } = useApp();
@@ -81,6 +82,19 @@ export default function AdminDashboard() {
             </p>
           </div>
           <CaseFolderBrowser cases={cases} title="All Case Folders" />
+        </section>
+      )}
+
+      {tab === "access" && (
+        <section className="space-y-5">
+          <div>
+            <h1 className="font-display text-2xl font-semibold text-ink-900">Case Access Control</h1>
+            <p className="mt-1 text-sm text-ink-400">
+              By default, only the reporting Police Officer and Admin can see a case. Assign a Lawyer,
+              Judge or Forensic Agency here to grant them access to that case's folder and documents.
+            </p>
+          </div>
+          <CaseAccessManager cases={cases} />
         </section>
       )}
     </DashboardLayout>

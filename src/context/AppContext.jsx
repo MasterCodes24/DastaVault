@@ -143,6 +143,17 @@ export function AppProvider({ children }) {
     [users]
   );
 
+  // Revokes a user's access to a case folder (removes them from assignedUsers).
+  // Used by the Admin's Case Access Control panel.
+  const unassignUserFromCase = useCallback((caseId, userId) => {
+    setCases((prev) =>
+      prev.map((c) => {
+        if (c.id !== caseId) return c;
+        return { ...c, assignedUsers: c.assignedUsers.filter((id) => id !== userId) };
+      })
+    );
+  }, []);
+
   const addCourtDate = useCallback(
     (caseId, date, note) => {
       setCases((prev) =>
@@ -262,6 +273,7 @@ export function AppProvider({ children }) {
       rejectUser,
       createCase,
       assignUserToCase,
+      unassignUserFromCase,
       addCourtDate,
       addCaseNote,
       uploadVerdict,
@@ -286,6 +298,7 @@ export function AppProvider({ children }) {
       rejectUser,
       createCase,
       assignUserToCase,
+      unassignUserFromCase,
       addCourtDate,
       addCaseNote,
       uploadVerdict,
