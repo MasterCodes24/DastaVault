@@ -212,4 +212,42 @@ router.post(
     }
 );
 
+router.get(
+    "/documents/:documentId/download",
+    async (req, res) => {
+        try {
+            const { documentId } = req.params;
+            const document = await Document.findOne({ documentId });
+
+            if (!document) {
+                return res.status(404).json({ message: "Document not found" });
+            }
+
+            res.download(document.filePath, document.title);
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({ message: "Download failed" });
+        }
+    }
+);
+
+router.get(
+    "/documents/:documentId/view",
+    async (req, res) => {
+        try {
+            const { documentId } = req.params;
+            const document = await Document.findOne({ documentId });
+
+            if (!document) {
+                return res.status(404).json({ message: "Document not found" });
+            }
+
+            res.sendFile(path.resolve(document.filePath));
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({ message: "View failed" });
+        }
+    }
+);
+
 module.exports = router;

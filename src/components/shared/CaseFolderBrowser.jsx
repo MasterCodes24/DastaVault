@@ -4,12 +4,14 @@ import { useApp } from "../../context/AppContext";
 import Badge, { statusTone } from "./Badge";
 import CaseTrackingProgress from "./CaseTrackingProgress";
 import { formatDateTime } from "../../utils/format";
+import { mockFetchFir } from "../../utils/mockApi";
 
 export default function CaseFolderBrowser({ cases, title = "Case Folders", extraPanel }) {
   const { getCaseDocuments, getUserById, verifyDocument } = useApp();
   const [query, setQuery] = useState("");
   const [docQuery, setDocQuery] = useState("");
   const [activeCaseId, setActiveCaseId] = useState(null);
+  const [viewingEfir, setViewingEfir] = useState(null);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return cases;
@@ -20,7 +22,24 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
   }, [cases, query]);
 
   const activeCase = cases.find((c) => c.id === activeCaseId);
-  const docs = activeCase ? getCaseDocuments(activeCase.id) : [];
+  let docs = activeCase ? getCaseDocuments(activeCase.id) : [];
+  
+  if (activeCase?.efir) {
+    // Inject the virtual e-FIR document if the case has one attached
+    docs = [
+      {
+        id: "virtual-efir",
+        documentName: `e-FIR ${activeCase.efir.number}`,
+        docType: "e-FIR",
+        uploadedBy: activeCase.assignedUsers[0] || "System",
+        uploadedAt: activeCase.efir.firDate,
+        isVirtualEfir: true,
+        firNumber: activeCase.efir.number,
+      },
+      ...docs,
+    ];
+  }
+
   const filteredDocs = docs.filter((d) =>
     d.documentName.toLowerCase().includes(docQuery.toLowerCase())
   );
@@ -66,58 +85,131 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
 
           {extraPanel && extraPanel(activeCase)}
 
-          <div>
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <h4 className="font-display text-sm font-semibold text-ink-900">
-                Documents <span className="text-ink-400 font-normal">({docs.length})</span>
-              </h4>
-              <div className="relative w-full max-w-xs">
-                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-300" />
-                <input
-                  value={docQuery}
-                  onChange={(e) => setDocQuery(e.target.value)}
-                  placeholder="Search documents by name…"
-                  className="w-full rounded-lg border border-line bg-white py-2 pl-9 pr-3 text-sm focus:border-vault-cyan focus:outline-none focus:ring-2 focus:ring-vault-cyan/30"
-                />
+          {viewingEfir ? (
+            <div className="rounded-xl border border-vault-cyan/30 bg-white shadow-card">
+              <div className="flex items-center justify-between border-b border-line px-5 py-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-ink-900 text-vault-cyan">
+                    <FileText size={18} />
+                  </div>
+                  <div>
+                    <h3 className="font-display text-base font-semibold text-ink-900">
+                      e-FIR Details
+                    </h3>
+                    <p className="text-sm text-ink-400">FIR No. {viewingEfir.number}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setViewingEfir(null)}
+                  className="rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink-500 hover:bg-paper/70 hover:text-ink-900"
+                >
+                  Close Details
+                </button>
+              </div>
+              <div className="p-6">
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-4">
+                  <div>
+                    <dt className="text-xs font-medium text-ink-400">Police Station</dt>
+                    <dd className="mt-1 text-sm font-semibold text-ink-900">{viewingEfir.station}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs font-medium text-ink-400">Date Filed</dt>
+                    <dd className="mt-1 font-mono text-sm font-semibold text-ink-900">
+                      {formatDateTime(viewingEfir.date)}
+                    </dd>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <dt className="text-xs font-medium text-ink-400">Section(s) of Law</dt>
+                    <dd className="mt-1 text-sm font-semibold text-ink-900">{viewingEfir.section}</dd>
+                  </div>
+                  <div className="sm:col-span-4">
+                    <dt className="text-xs font-medium text-ink-400">Complainant / Informant</dt>
+                    <dd className="mt-1 text-sm font-semibold text-ink-900">{viewingEfir.complainant}</dd>
+                  </div>
+                  <div className="sm:col-span-4 rounded-xl border border-line bg-paper/60 p-4">
+                    <dt className="text-xs font-medium text-ink-400 mb-2">Summary of Facts</dt>
+                    <dd className="text-sm leading-relaxed text-ink-900">{viewingEfir.summary}</dd>
+                  </div>
+                </dl>
               </div>
             </div>
+          ) : (
+            <div>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <h4 className="font-display text-sm font-semibold text-ink-900">
+                  Documents <span className="text-ink-400 font-normal">({docs.length})</span>
+                </h4>
+                <div className="relative w-full max-w-xs">
+                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-300" />
+                  <input
+                    value={docQuery}
+                    onChange={(e) => setDocQuery(e.target.value)}
+                    placeholder="Search documents by name…"
+                    className="w-full rounded-lg border border-line bg-white py-2 pl-9 pr-3 text-sm focus:border-vault-cyan focus:outline-none focus:ring-2 focus:ring-vault-cyan/30"
+                  />
+                </div>
+              </div>
 
-            {filteredDocs.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-line bg-paper/60 px-4 py-6 text-center text-sm text-ink-400">
-                No documents match your search.
-              </p>
-            ) : (
-              <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
-                {filteredDocs.map((d) => {
-                  const uploader = getUserById(d.uploadedBy);
-                  return (
-                    <li key={d.id} className="flex items-center gap-3 bg-white px-4 py-3 hover:bg-paper/60">
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ink-50 text-ink-500">
-                        <FileText size={16} />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-ink-900">{d.documentName}</p>
-                        <p className="truncate text-xs text-ink-400">
-                          {d.docType} · Uploaded by {uploader?.name || "Unknown"} · {formatDateTime(d.uploadedAt)}
-                        </p>
-                      </div>
-                      <Badge tone="neutral">{d.docType}</Badge>
-                      {d.documentId && (
-                        <button
-                          onClick={() => verifyDocument(d.documentId)}
-                          title="Verify document integrity against blockchain record"
-                          className="flex items-center gap-1 rounded-lg border border-vault-cyan/30 bg-vault-cyan/10 px-2.5 py-1.5 text-xs font-semibold text-vault-cyanDark transition hover:bg-vault-cyan/20"
-                        >
-                          <ShieldCheck size={13} />
-                          Verify
-                        </button>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+              {filteredDocs.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-line bg-paper/60 px-4 py-6 text-center text-sm text-ink-400">
+                  No documents match your search.
+                </p>
+              ) : (
+                <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
+                  {filteredDocs.map((d) => {
+                    const uploader = getUserById(d.uploadedBy);
+                    const isEfir = d.docType === "e-FIR" || d.isVirtualEfir;
+                    return (
+                      <li key={d.id} className="flex items-center gap-3 bg-white px-4 py-3 hover:bg-paper/60">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ink-50 text-ink-500">
+                          <FileText size={16} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-ink-900">{d.documentName}</p>
+                          <p className="truncate text-xs text-ink-400">
+                            {d.docType} · Uploaded by {uploader?.name || "Unknown"} · {formatDateTime(d.uploadedAt)}
+                          </p>
+                        </div>
+                        <Badge tone="neutral">{d.docType}</Badge>
+                        <div className="flex gap-2">
+                          {isEfir ? (
+                            <button
+                              onClick={() => {
+                                const firDetails = mockFetchFir(activeCase.efir?.number || d.firNumber || "UNKNOWN");
+                                setViewingEfir(firDetails);
+                              }}
+                              className="flex items-center gap-1 rounded-lg border border-ink-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-ink-900 transition hover:bg-paper/70"
+                            >
+                              View Details
+                            </button>
+                          ) : d.documentId ? (
+                            <>
+                              <a
+                                href={`http://localhost:5000/api/documents/${d.documentId}/view`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1 rounded-lg border border-ink-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-ink-900 transition hover:bg-paper/70"
+                              >
+                                View
+                              </a>
+                              <button
+                                onClick={() => verifyDocument(d.documentId)}
+                                title="Verify document integrity against blockchain record"
+                                className="flex items-center gap-1 rounded-lg border border-vault-cyan/30 bg-vault-cyan/10 px-2.5 py-1.5 text-xs font-semibold text-vault-cyanDark transition hover:bg-vault-cyan/20"
+                              >
+                                <ShieldCheck size={13} />
+                                Verify
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );

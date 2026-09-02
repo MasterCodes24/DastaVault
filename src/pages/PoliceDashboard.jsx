@@ -5,21 +5,7 @@ import DashboardLayout from "../components/layout/DashboardLayout";
 import CaseFolderBrowser from "../components/shared/CaseFolderBrowser";
 import DocumentUpload from "../components/shared/DocumentUpload";
 import { Label, Input, Button } from "../components/shared/Field";
-
-function mockFetchFir(number) {
-  const seedIndex = [...number].reduce((s, c) => s + c.charCodeAt(0), 0);
-  const stations = ["MIDC Police Station", "Andheri Police Station", "Colaba Police Station", "Worli Police Station"];
-  const sections = ["IPC 379", "IPC 420", "IPC 302", "IPC 354", "IT Act 66C"];
-  return {
-    number,
-    station: stations[seedIndex % stations.length],
-    date: new Date(Date.now() - (seedIndex % 30) * 86400000).toISOString().slice(0, 10),
-    section: sections[seedIndex % sections.length],
-    complainant: "Withheld — visible to assigned personnel only",
-    summary:
-      "Complainant reported the incident at the above station. Preliminary investigation has been assigned to the reporting officer.",
-  };
-}
+import { mockFetchFir } from "../utils/mockApi";
 
 export default function PoliceDashboard() {
   const { currentUser, getCasesForUser, createCase, notify } = useApp();
@@ -31,12 +17,20 @@ export default function PoliceDashboard() {
       {tab === "efir" && <EfirPortal onCreated={() => setTab("folders")} />}
       {tab === "folders" && (
         <section className="space-y-5">
-          <div>
-            <h1 className="font-display text-2xl font-semibold text-ink-900">Case Folders</h1>
-            <p className="mt-1 text-sm text-ink-400">Cases where you're an assigned investigating officer.</p>
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h1 className="font-display text-2xl font-semibold text-ink-900">Case Folders</h1>
+              <p className="mt-1 text-sm text-ink-400">Cases where you're an assigned investigating officer.</p>
+            </div>
+            <Button variant="accent" onClick={() => setTab("create-case")}>
+              Create Case Folder
+            </Button>
           </div>
           <CaseFolderBrowser cases={myCases} title="My Case Folders" />
         </section>
+      )}
+      {tab === "create-case" && (
+        <DirectCaseCreate onCreated={() => setTab("folders")} onCancel={() => setTab("folders")} />
       )}
       {tab === "upload" && (
         <section className="space-y-5">
@@ -55,12 +49,75 @@ export default function PoliceDashboard() {
   );
 }
 
-function EfirPortal({ onCreated }) {
+function DirectCaseCreate({ onCreated, onCancel }) {
   const { currentUser, createCase, notify } = useApp();
+  const [cnr, setCnr] = useState("");
+  const [title, setTitle] = useState("");
+  const [caseType, setCaseType] = useState("");
+  const [description, setDescription] = useState("");
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    if (!cnr.trim() || !title.trim() || !caseType.trim())
+      return notify("CNR number, case title and case type are required.", "warn");
+    const created = await createCase({
+      cnrNumber: cnr,
+      title,
+      type: caseType,
+      description,
+      creatorId: currentUser.id,
+    });
+    if (!created) return;
+    onCreated();
+  };
+
+  return (
+    <section className="space-y-5">
+      <div>
+        <h1 className="font-display text-2xl font-semibold text-ink-900">Create New Case Folder</h1>
+        <p className="mt-1 text-sm text-ink-400">Create a case folder directly without an e-FIR.</p>
+      </div>
+      <form onSubmit={handleCreate} className="rounded-2xl border border-line bg-white p-6 shadow-card animate-fadeUp">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <Label>CNR Number *</Label>
+            <Input value={cnr} onChange={(e) => setCnr(e.target.value)} placeholder="e.g. MHCC010012342026" />
+          </div>
+          <div>
+            <Label>Case Title *</Label>
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. State vs. John Doe" />
+          </div>
+          <div>
+            <Label>Case Type *</Label>
+            <Input value={caseType} onChange={(e) => setCaseType(e.target.value)} placeholder="e.g. Theft, Fraud, Homicide" />
+          </div>
+          <div>
+            <Label>Description</Label>
+            <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Brief description (optional)" />
+          </div>
+        </div>
+        <div className="mt-6 flex flex-wrap gap-3">
+          <Button type="button" variant="outline" onClick={onCancel}>
+            <ArrowLeft size={15} /> Cancel
+          </Button>
+          <Button type="submit" variant="accent">
+            Create Case Folder
+          </Button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function EfirPortal({ onCreated }) {
+  const { currentUser, createCase, notify, getCasesForUser, cases } = useApp();
+  const myCases = getCasesForUser(currentUser.id);
   const [firNumber, setFirNumber] = useState("");
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [showAttach, setShowAttach] = useState(false);
+  const [selectedCaseId, setSelectedCaseId] = useState("");
   const [cnr, setCnr] = useState("");
   const [title, setTitle] = useState("");
   const [caseType, setCaseType] = useState("");
@@ -76,6 +133,17 @@ function EfirPortal({ onCreated }) {
     }, 700);
   };
 
+  const resetState = () => {
+    setPreview(null);
+    setFirNumber("");
+    setShowCreate(false);
+    setShowAttach(false);
+    setCnr("");
+    setTitle("");
+    setCaseType("");
+    setDescription("");
+  };
+
   const handleCreate = async (e) => {
     e.preventDefault();
     if (!cnr.trim() || !title.trim() || !caseType.trim())
@@ -88,14 +156,27 @@ function EfirPortal({ onCreated }) {
       creatorId: currentUser.id,
       efir: { number: preview.number, firDate: preview.date },
     });
-    if (!created) return; // API failed — error toast already shown by context
-    setPreview(null);
-    setFirNumber("");
-    setShowCreate(false);
-    setCnr("");
-    setTitle("");
-    setCaseType("");
-    setDescription("");
+    if (!created) return; // API failed
+    resetState();
+    onCreated();
+  };
+
+  const handleAttach = (e) => {
+    e.preventDefault();
+    if (!selectedCaseId) return notify("Please select a case to attach the e-FIR to.", "warn");
+    const selectedCase = cases.find((c) => c.id === selectedCaseId);
+    if (!selectedCase) return notify("Case not found.", "danger");
+
+    if (selectedCase.efir) {
+      notify("This case already has an e-FIR attached. Indian law does not allow multiple FIRs for one case. Please upload this complaint as a Witness Statement in the Document Upload section.", "warn");
+      return;
+    }
+
+    // In a real app we would dispatch an action to update the case in the backend.
+    // For mock context, we assume success and notify.
+    selectedCase.efir = { number: preview.number, firDate: preview.date };
+    notify(`e-FIR ${preview.number} attached to case ${selectedCase.cnrNumber} successfully.`);
+    resetState();
     onCreated();
   };
 
@@ -166,14 +247,49 @@ function EfirPortal({ onCreated }) {
           </dl>
 
           <div className="mt-6 flex flex-wrap gap-3">
-            <Button variant="outline" onClick={() => setPreview(null)}>
+            <Button variant="outline" onClick={() => resetState()}>
               <ArrowLeft size={15} /> Go Back
             </Button>
-            <Button variant="accent" onClick={() => setShowCreate(true)}>
+            <Button variant="accent" onClick={() => { setShowCreate(true); setShowAttach(false); }}>
               <CheckCircle2 size={15} /> Add to New Case Folder
+            </Button>
+            <Button variant="outline" onClick={() => { setShowAttach(true); setShowCreate(false); }}>
+              Add to Existing Case Folder
             </Button>
           </div>
         </div>
+      )}
+
+      {preview && showAttach && (
+        <form onSubmit={handleAttach} className="rounded-2xl border border-line bg-white p-6 shadow-card animate-fadeUp">
+          <h3 className="mb-1 font-display text-base font-semibold text-ink-900">Attach to Existing Case</h3>
+          <p className="mb-5 text-sm text-ink-400">
+            Select an existing case folder to attach e-FIR {preview.number} to.
+          </p>
+          <div className="mb-6">
+            <Label>Select Case *</Label>
+            <select
+              value={selectedCaseId}
+              onChange={(e) => setSelectedCaseId(e.target.value)}
+              className="w-full rounded-lg border border-line bg-white px-3 py-2 text-sm focus:border-vault-cyan focus:outline-none focus:ring-2 focus:ring-vault-cyan/30"
+            >
+              <option value="" disabled>Select a case...</option>
+              {myCases.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.cnrNumber} — {c.title}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Button type="button" variant="outline" onClick={() => setShowAttach(false)}>
+              <ArrowLeft size={15} /> Back
+            </Button>
+            <Button type="submit" variant="accent">
+              Attach e-FIR
+            </Button>
+          </div>
+        </form>
       )}
 
       {preview && showCreate && (

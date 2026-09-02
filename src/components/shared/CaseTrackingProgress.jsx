@@ -1,12 +1,57 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Check, FileSignature, FlaskConical, Scale, Gavel, ScrollText } from "lucide-react";
-import { MILESTONES } from "../../data/mockData";
+import { MILESTONES, ROLES } from "../../data/mockData";
 import { formatDate } from "../../utils/format";
+import { useApp } from "../../context/AppContext";
 
-const ICONS = [FileSignature, FlaskConical, Scale, Gavel, ScrollText];
+const ICONS = {
+  efir: FileSignature,
+  forensics: FlaskConical,
+  lawyers: Scale,
+  hearings: Gavel,
+  verdict: ScrollText,
+};
 
 export default function CaseTrackingProgress({ caseItem }) {
-  const stage = caseItem.progressStage || 0; // number of completed milestones (0-5)
+  const { getUserById } = useApp();
+
+  const activeMilestones = useMemo(() => {
+    const users = (caseItem.assignedUsers || []).map(getUserById).filter(Boolean);
+    const hasForensic = users.some((u) => u.role === ROLES.FORENSIC);
+    const hasLawyer = users.some((u) => u.role === ROLES.LAWYER);
+    const hasJudge = users.some((u) => u.role === ROLES.JUDGE);
+
+    const visible = [];
+
+    // 1. e-FIR / Registration
+    visible.push({ ...MILESTONES[0], isDone: true, isActive: false });
+
+    // 2. Forensics
+    const forensicsDone = !!caseItem.milestoneDates?.forensics;
+    if (hasForensic || forensicsDone) {
+      visible.push({ ...MILESTONES[1], isDone: forensicsDone, isActive: !forensicsDone });
+    }
+
+    // 3. Lawyers
+    const lawyersDone = !!caseItem.milestoneDates?.lawyers;
+    if (hasLawyer || lawyersDone) {
+      visible.push({ ...MILESTONES[2], isDone: lawyersDone, isActive: !lawyersDone });
+    }
+
+    // 4. Hearings
+    const hearingsDone = (caseItem.courtDates?.length || 0) > 0;
+    if (hasJudge || hearingsDone) {
+      visible.push({ ...MILESTONES[3], isDone: hearingsDone, isActive: !hearingsDone });
+    }
+
+    // 5. Verdict
+    const verdictDone = !!caseItem.verdict;
+    if (hasJudge || verdictDone) {
+      visible.push({ ...MILESTONES[4], isDone: verdictDone, isActive: !verdictDone });
+    }
+
+    return visible;
+  }, [caseItem, getUserById]);
 
   return (
     <div className="w-full">
@@ -17,21 +62,20 @@ export default function CaseTrackingProgress({ caseItem }) {
       {/* Desktop / tablet: horizontal chain */}
       <div className="hidden sm:block">
         <div className="relative flex items-start">
-          {MILESTONES.map((m, i) => {
-            const stepNum = i + 1;
-            const isDone = stepNum <= stage;
-            const isActive = stepNum === stage + 1;
-            const Icon = ICONS[i];
-            const date = caseItem.milestoneDates?.[m.key];
+          {activeMilestones.map((m, index) => {
+            const isDone = m.isDone;
+            const isActive = m.isActive;
+            const Icon = ICONS[m.key];
+            const date = caseItem.milestoneDates?.[m.key] || caseItem.createdAt;
 
             return (
               <div key={m.key} className="relative flex flex-1 flex-col items-center text-center">
-                {i !== 0 && (
+                {index !== 0 && (
                   <div
                     className={`absolute right-1/2 top-5 h-[3px] w-full -translate-y-1/2 ${
-                      stepNum <= stage ? "bg-vault-cyan" : "bg-line"
+                      isDone || isActive ? "bg-vault-cyan" : "bg-line"
                     }`}
-                    style={{ backgroundImage: stepNum <= stage ? "none" : undefined }}
+                    style={{ backgroundImage: isDone || isActive ? "none" : undefined }}
                   />
                 )}
                 <div
@@ -65,11 +109,12 @@ export default function CaseTrackingProgress({ caseItem }) {
       {/* Mobile: vertical chain */}
       <div className="sm:hidden">
         <ol className="relative ml-4 space-y-6 border-l-2 border-line pl-6">
-          {MILESTONES.map((m, i) => {
-            const stepNum = i + 1;
-            const isDone = stepNum <= stage;
-            const isActive = stepNum === stage + 1;
-            const date = caseItem.milestoneDates?.[m.key];
+          {activeMilestones.map((m, index) => {
+            const isDone = m.isDone;
+            const isActive = m.isActive;
+            const date = caseItem.milestoneDates?.[m.key] || caseItem.createdAt;
+            const stepNum = index + 1;
+            
             return (
               <li key={m.key} className="relative">
                 <span
