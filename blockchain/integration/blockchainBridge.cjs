@@ -1,6 +1,7 @@
 const path = require("path");
 const http = require("http");
 const https = require("https");
+const crypto = require("crypto");
 
 let ethers;
 try {
@@ -135,6 +136,17 @@ const getNetworkInfo = async () => {
   };
 };
 
+// Query pending nonce directly from RPC to eliminate any local ethers nonce caching
+async function getFreshNonce(contractInstance) {
+  try {
+    const address = contractInstance.runner.address;
+    const hexNonce = await contractInstance.runner.provider.send("eth_getTransactionCount", [address, "pending"]);
+    return parseInt(hexNonce, 16);
+  } catch (e) {
+    return undefined;
+  }
+}
+
 // Helper function to anchor the initial e-FIR
 const submitEFIR = async (caseId, firHash) => {
   try {
@@ -148,14 +160,31 @@ const submitEFIR = async (caseId, firHash) => {
         error: "Blockchain node offline. Simulated local record.",
       };
     }
-    const nonce = await c.runner.provider.getTransactionCount(c.runner.address, "pending");
-    const tx = await c.anchorEFIR(caseId, firHash, { nonce });
+    const nonce = await getFreshNonce(c);
+    const options = nonce !== undefined ? { nonce } : {};
+    const tx = await c.anchorEFIR(caseId, firHash, options);
     const receipt = await tx.wait();
     return { success: true, transactionHash: receipt.hash, blockNumber: receipt.blockNumber };
   } catch (error) {
     return { success: false, error: error.message };
   }
 };
+
+// Ensure the case exists on-chain so anchorDocumentHash won't revert with "Case does not exist"
+async function ensureCaseExists(contractInstance, caseId) {
+  try {
+    const caseData = await contractInstance.cases(caseId);
+    if (!caseData || Number(caseData.createdAt) === 0) {
+      const dummyHash = "0x" + crypto.createHash("sha256").update(caseId).digest("hex");
+      const nonce = await getFreshNonce(contractInstance);
+      const options = nonce !== undefined ? { nonce } : {};
+      const tx = await contractInstance.anchorEFIR(caseId, dummyHash, options);
+      await tx.wait();
+    }
+  } catch (err) {
+    // Already created or concurrent call, ignore
+  }
+}
 
 // Helper function to anchor evidence or forensic reports (defaults to version 1)
 const anchorDocumentHash = async (caseId, docId, fileHash, storageUri = "") => {
@@ -170,8 +199,10 @@ const anchorDocumentHash = async (caseId, docId, fileHash, storageUri = "") => {
         error: "Blockchain node offline. Using local simulated ledger.",
       };
     }
-    const nonce = await c.runner.provider.getTransactionCount(c.runner.address, "pending");
-    const tx = await c.anchorDocumentHash(caseId, docId, fileHash, storageUri || "", { nonce });
+    await ensureCaseExists(c, caseId);
+    const nonce = await getFreshNonce(c);
+    const options = nonce !== undefined ? { nonce } : {};
+    const tx = await c.anchorDocumentHash(caseId, docId, fileHash, storageUri || "", options);
     const receipt = await tx.wait();
     return {
       success: true,
@@ -203,8 +234,10 @@ const anchorDocumentVersion = async (caseId, docId, version, fileHash, storageUr
         error: "Blockchain node offline. Using local simulated ledger.",
       };
     }
-    const nonce = await c.runner.provider.getTransactionCount(c.runner.address, "pending");
-    const tx = await c.anchorDocumentVersion(caseId, docId, version, fileHash, storageUri || "", { nonce });
+    await ensureCaseExists(c, caseId);
+    const nonce = await getFreshNonce(c);
+    const options = nonce !== undefined ? { nonce } : {};
+    const tx = await c.anchorDocumentVersion(caseId, docId, version, fileHash, storageUri || "", options);
     const receipt = await tx.wait();
     return {
       success: true,

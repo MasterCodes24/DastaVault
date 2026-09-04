@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   GitBranch,
   History,
@@ -22,9 +22,10 @@ import { formatDateTime } from "../../utils/format";
 import { useApp } from "../../context/AppContext";
 import { apiFetchDocumentVersions } from "../../api/apiClient";
 
-export default function DocumentVersionModal({ isOpen, onClose, document, caseItem }) {
-  const { uploadDocumentVersion, verifyDocumentVersion, blockchainStatus, getUserById } = useApp();
-  const [activeTab, setActiveTab] = useState("history"); // 'history' | 'upload'
+export default function DocumentVersionModal({ isOpen, onClose, document, initialTab = "history", caseItem }) {
+  const { uploadDocumentVersion, verifyDocumentVersion, blockchainStatus, getUserById, notify } = useApp();
+  const [activeTab, setActiveTab] = useState(initialTab); // 'history' | 'upload'
+  const [currentDoc, setCurrentDoc] = useState(document);
   const [versions, setVersions] = useState([]);
   const [loadingVersions, setLoadingVersions] = useState(false);
   const [verifyingVersion, setVerifyingVersion] = useState(null);
@@ -35,12 +36,20 @@ export default function DocumentVersionModal({ isOpen, onClose, document, caseIt
   const [newFile, setNewFile] = useState(null);
   const [changeNote, setChangeNote] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    if (document) {
+      setCurrentDoc(document);
+    }
+  }, [document]);
 
   useEffect(() => {
     if (isOpen && document?.documentId) {
+      setActiveTab(initialTab);
       loadVersions();
     }
-  }, [isOpen, document?.documentId]);
+  }, [isOpen, document?.documentId, initialTab]);
 
   const loadVersions = async () => {
     setLoadingVersions(true);
@@ -109,24 +118,50 @@ export default function DocumentVersionModal({ isOpen, onClose, document, caseIt
   };
 
   const handleUploadNewVersion = async (e) => {
-    e.preventDefault();
-    if (!newFile) return;
+    e?.preventDefault?.();
+    if (!newFile) {
+      notify("Please select a file to upload as the updated revision.", "warn");
+      return;
+    }
+
+    const docTarget = currentDoc || document;
+    const targetCaseId = docTarget?.caseId || caseItem?.caseId || caseItem?.id || caseItem?.backendId;
+    if (!targetCaseId) {
+      console.error("[DocumentVersionModal] Could not resolve caseId.", {
+        docCaseId: docTarget?.caseId,
+        caseItemCaseId: caseItem?.caseId,
+        caseItemId: caseItem?.id,
+        caseItemBackendId: caseItem?.backendId,
+      });
+      notify("Case reference could not be resolved for this document.", "danger");
+      return;
+    }
 
     setIsSubmitting(true);
     try {
       const result = await uploadDocumentVersion({
-        caseId: caseItem.id || caseItem.caseId,
-        documentId: document.documentId,
+        caseId: targetCaseId,
+        documentId: docTarget.documentId,
         file: newFile,
         changeNote: changeNote.trim() || `Updated revision`,
       });
 
       if (result) {
+        if (result.document) {
+          setCurrentDoc((prev) => ({
+            ...prev,
+            version: result.document.version,
+            hash: result.document.hash,
+            blockchain: result.document.blockchain,
+          }));
+        }
         setNewFile(null);
         setChangeNote("");
         setActiveTab("history");
         await loadVersions();
       }
+    } catch (err) {
+      notify(err.message || "Version upload failed.", "danger");
     } finally {
       setIsSubmitting(false);
     }
@@ -137,7 +172,7 @@ export default function DocumentVersionModal({ isOpen, onClose, document, caseIt
   const isSepolia = blockchainStatus?.networkName?.toLowerCase().includes("sepolia");
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Document Version Control & Ledger" maxWidth="max-w-3xl">
+    <Modal open={isOpen} onClose={onClose} title="Document Version Control & Ledger" maxWidth="max-w-3xl">
       <div className="space-y-5">
         {/* Document Header Info */}
         <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-line bg-paper/60 p-4">
@@ -148,15 +183,15 @@ export default function DocumentVersionModal({ isOpen, onClose, document, caseIt
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-display text-base font-semibold text-ink-900">
-                  {document.documentName || document.title}
+                  {currentDoc?.documentName || currentDoc?.title || document.documentName || document.title}
                 </h3>
                 <span className="inline-flex items-center gap-1 rounded-full bg-vault-cyan/15 px-2.5 py-0.5 text-xs font-semibold text-vault-cyanDark">
                   <GitBranch size={12} />
-                  v{document.version || 1}
+                  v{currentDoc?.version || document.version || 1}
                 </span>
               </div>
               <p className="text-xs text-ink-500">
-                {document.docType || document.documentType} · Case: {caseItem?.cnrNumber}
+                {currentDoc?.docType || currentDoc?.documentType || document.docType || document.documentType} · Case: {caseItem?.cnrNumber}
               </p>
             </div>
           </div>
@@ -236,7 +271,7 @@ export default function DocumentVersionModal({ isOpen, onClose, document, caseIt
                           </span>
                           {isLatest && <Badge tone="success">Current / Active</Badge>}
                           <span className="text-sm font-semibold text-ink-900">
-                            {ver.fileName || document.documentName}
+                            {ver.fileName || currentDoc?.documentName || document.documentName}
                           </span>
                         </div>
 
@@ -291,13 +326,13 @@ export default function DocumentVersionModal({ isOpen, onClose, document, caseIt
                             <>
                               <CheckCircle2 size={14} className="text-emerald-600" />
                               <span>
-                                Cryptographic Match Confirmed: On-disk SHA-256 matches blockchain immutable record.
+                                Match Confirmed: File is intact and verified against secure ledger.
                               </span>
                             </>
                           ) : (
                             <>
                               <AlertTriangle size={14} className="text-rose-600" />
-                              <span>TAMPER ALERT: On-disk file hash does not match blockchain anchor!</span>
+                              <span>TAMPER ALERT: File has been modified or corrupted!</span>
                             </>
                           )}
                         </div>
@@ -326,9 +361,9 @@ export default function DocumentVersionModal({ isOpen, onClose, document, caseIt
                           </div>
                         </div>
 
-                        {/* On-Chain Transaction */}
+                        {/* Transaction Ref */}
                         <div className="flex items-center justify-between rounded-md bg-ink-50 px-2.5 py-1.5">
-                          <span className="text-ink-400">Blockchain Tx:</span>
+                          <span className="text-ink-400">Transaction Ref:</span>
                           <div className="flex items-center gap-1.5 font-mono text-ink-700">
                             <span className="truncate max-w-[140px]" title={txHash}>
                               {txHash ? `${txHash.substring(0, 10)}…${txHash.slice(-8)}` : "Pending"}
@@ -381,27 +416,58 @@ export default function DocumentVersionModal({ isOpen, onClose, document, caseIt
 
         {/* Tab 2: Upload New Version Form */}
         {activeTab === "upload" && (
-          <form onSubmit={handleUploadNewVersion} className="space-y-4">
+          <form onSubmit={handleUploadNewVersion} noValidate className="space-y-4">
             <div className="rounded-xl border border-vault-cyan/30 bg-vault-cyan/5 p-4 text-xs text-ink-600 leading-relaxed">
               <strong className="text-vault-cyanDark font-semibold">Version Increment:</strong> Uploading an updated
               file will automatically advance this document to{" "}
-              <span className="font-bold text-ink-900">v{(document.version || 1) + 1}</span>. The cryptographic SHA-256
+              <span className="font-bold text-ink-900">v{((currentDoc || document).version || 1) + 1}</span>. The cryptographic SHA-256
               hash of the new revision will be anchored permanently into the smart contract registry. Previous versions
               remain immutable and accessible in the history tab.
             </div>
 
             <div>
-              <Label>Select Updated File *</Label>
-              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-dashed border-line bg-ink-50/50 p-4 text-sm text-ink-500 transition hover:border-vault-cyan hover:bg-vault-cyan/5">
-                <UploadCloud size={20} className="shrink-0 text-vault-cyanDark" />
-                <span className="truncate">{newFile ? newFile.name : "Choose replacement / revision file…"}</span>
+              <Label htmlFor="version-file-input">Select Replacement / Revision File *</Label>
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (e.dataTransfer.files?.[0]) {
+                    setNewFile(e.dataTransfer.files[0]);
+                  }
+                }}
+                className="group flex cursor-pointer flex-col items-center justify-center gap-2.5 rounded-xl border-2 border-dashed border-line bg-paper/60 p-6 text-center transition hover:border-vault-cyan hover:bg-vault-cyan/5"
+              >
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-ink-900 text-vault-cyan transition group-hover:scale-105">
+                  <UploadCloud size={22} />
+                </div>
+                {newFile ? (
+                  <div className="space-y-1">
+                    <p className="font-display text-sm font-semibold text-ink-900 truncate max-w-sm">{newFile.name}</p>
+                    <p className="text-xs text-vault-cyanDark font-medium">
+                      {(newFile.size / 1024).toFixed(1)} KB · Ready to anchor · Click to change
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold text-ink-800">
+                      Click to browse or drag and drop your updated file here
+                    </p>
+                    <p className="text-xs text-ink-400">Supported: PDF, DOCX, TXT, Images, Forensic files</p>
+                  </div>
+                )}
                 <input
+                  ref={fileInputRef}
+                  id="version-file-input"
                   type="file"
                   className="hidden"
                   onChange={(e) => setNewFile(e.target.files?.[0] || null)}
-                  required
                 />
-              </label>
+              </div>
             </div>
 
             <div>
@@ -409,21 +475,21 @@ export default function DocumentVersionModal({ isOpen, onClose, document, caseIt
               <Input
                 value={changeNote}
                 onChange={(e) => setChangeNote(e.target.value)}
-                placeholder="e.g. Added chemical analysis findings to forensic report"
+                placeholder="e.g. Added witness supplementary interview transcript"
               />
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="secondary" onClick={() => setActiveTab("history")}>
+              <Button type="button" variant="outline" onClick={() => setActiveTab("history")}>
                 Cancel
               </Button>
-              <Button type="submit" variant="accent" disabled={!newFile || isSubmitting}>
+              <Button type="submit" variant="accent" disabled={isSubmitting}>
                 {isSubmitting ? (
                   "Anchoring to Blockchain…"
                 ) : (
                   <>
                     <GitBranch size={16} />
-                    Anchor v{(document.version || 1) + 1} on Blockchain
+                    Anchor v{((currentDoc || document).version || 1) + 1} on Blockchain
                   </>
                 )}
               </Button>

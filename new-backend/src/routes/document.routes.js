@@ -70,9 +70,17 @@ router.post(
             const { caseId } = req.params;
             const { documentType, title, uploadedBy = null } = req.body;
 
-            const caseExists = await Case.findOne({ caseId });
+            let caseExists = await Case.findOne({ caseId });
             if (!caseExists) {
-                return res.status(404).json({ message: "Case not found" });
+                // Auto-create a mock case if uploading to a legacy mock case ID
+                caseExists = await Case.create({
+                    caseId: caseId,
+                    title: `Legacy Case ${caseId}`,
+                    type: "Other",
+                    status: "REGISTERED",
+                    openedBy: uploadedBy,
+                    assigned_users: [uploadedBy]
+                });
             }
 
             if (!req.file) {
@@ -176,7 +184,10 @@ router.post(
             const { caseId, documentId } = req.params;
             const { changeNote = "", uploadedBy = null } = req.body;
 
-            const document = await Document.findOne({ documentId, caseId });
+            let document = await Document.findOne({ documentId, caseId });
+            if (!document) {
+                document = await Document.findOne({ documentId });
+            }
             if (!document) {
                 return res.status(404).json({ message: "Document not found" });
             }

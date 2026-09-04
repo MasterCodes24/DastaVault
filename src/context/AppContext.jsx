@@ -668,7 +668,7 @@ export function AppProvider({ children }) {
       try {
         const result = await apiVerifyDocument(documentId, currentUser?.id);
         if (result.verified) {
-          notify(`✅ Verified — Integrity intact (${result.onChain ? "on-chain smart contract" : "ledger"}).`, "success");
+          notify(`✅ Verified — Integrity intact.`, "success");
         } else {
           notify("⚠️ TAMPERED — Hash mismatch detected! Document may be altered.", "danger");
         }
@@ -687,7 +687,7 @@ export function AppProvider({ children }) {
       try {
         const result = await apiVerifyDocumentVersion(documentId, version, currentUser?.id);
         if (result.verified) {
-          notify(`✅ Version ${version} verified — Integrity intact (${result.onChain ? "on-chain smart contract" : "ledger"}).`, "success");
+          notify(`✅ Version ${version} verified — Integrity intact.`, "success");
         } else {
           notify(`⚠️ Version ${version} TAMPERED — Hash mismatch detected!`, "danger");
         }

@@ -21,7 +21,7 @@ import { formatDateTime } from "../../utils/format";
 import { mockFetchFir } from "../../utils/mockApi";
 
 export default function CaseFolderBrowser({ cases, title = "Case Folders", extraPanel }) {
-  const { getCaseDocuments, getUserById, verifyDocument, blockchainStatus } = useApp();
+  const { getCaseDocuments, getUserById, verifyDocument, blockchainStatus, currentUser } = useApp();
   const [query, setQuery] = useState("");
   const [docQuery, setDocQuery] = useState("");
   const [activeCaseId, setActiveCaseId] = useState(null);
@@ -57,7 +57,7 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
   }
 
   const filteredDocs = docs.filter((d) =>
-    d.documentName.toLowerCase().includes(docQuery.toLowerCase())
+    (d.documentName || d.title || d.docName || "Untitled Document").toLowerCase().includes(docQuery.toLowerCase())
   );
 
   if (activeCase) {
@@ -227,7 +227,7 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <p className="truncate text-sm font-semibold text-ink-900">{d.documentName}</p>
+                            <p className="truncate text-sm font-semibold text-ink-900">{d.documentName || d.title || d.docName || "Untitled Document"}</p>
                             {!isEfir && (
                               <span className="inline-flex items-center gap-1 rounded-md bg-vault-cyan/15 px-2 py-0.5 text-xs font-bold text-vault-cyanDark">
                                 <GitBranch size={11} />
@@ -255,8 +255,25 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
                             </button>
                           ) : d.documentId ? (
                             <>
+                              {(() => {
+                                const uid = currentUser?.id;
+                                const cred = currentUser?.credentialID;
+                                const dbid = currentUser?.dbId;
+                                const upBy = d.uploadedBy;
+                                const isOwner = upBy && (upBy === uid || upBy === cred || upBy === dbid);
+                                return isOwner ? (
+                                  <button
+                                    onClick={() => setVersionModalDoc({ doc: d, tab: "upload" })}
+                                    title="Upload new version"
+                                    className="flex items-center gap-1 rounded-lg border border-vault-cyan/40 bg-vault-cyan/5 px-2.5 py-1.5 text-xs font-semibold text-vault-cyanDark transition hover:bg-vault-cyan/20"
+                                  >
+                                    <GitBranch size={13} />
+                                    Update
+                                  </button>
+                                ) : null;
+                              })()}
                               <button
-                                onClick={() => setVersionModalDoc(d)}
+                                onClick={() => setVersionModalDoc({ doc: d, tab: "history" })}
                                 title="Open version control and history"
                                 className="flex items-center gap-1 rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs font-semibold text-ink-700 transition hover:bg-paper/70"
                               >
@@ -297,7 +314,8 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
         <DocumentVersionModal
           isOpen={!!versionModalDoc}
           onClose={() => setVersionModalDoc(null)}
-          document={versionModalDoc}
+          document={versionModalDoc?.doc}
+          initialTab={versionModalDoc?.tab}
           caseItem={activeCase}
         />
       </div>

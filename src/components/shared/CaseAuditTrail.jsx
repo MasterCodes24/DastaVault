@@ -115,10 +115,10 @@ export default function CaseAuditTrail({ caseId }) {
           </div>
           <div>
             <h4 className="font-display text-sm font-semibold text-ink-900">
-              Immutable Chain of Custody & Audit Trail
+              Case Audit Trail
             </h4>
             <p className="text-xs text-ink-400">
-              Cryptographically timestamped events recorded on DastaVault ledger ({logs.length} events)
+              History of all activities and events for this case ({logs.length} events)
             </p>
           </div>
         </div>
@@ -215,7 +215,7 @@ export default function CaseAuditTrail({ caseId }) {
 
                     {txRef && (
                       <div className="flex items-center gap-1 font-mono text-ink-600">
-                        <span className="text-ink-400">On-Chain Tx:</span>
+                        <span className="text-ink-400">Transaction Ref:</span>
                         <span className="truncate max-w-[130px]" title={txRef}>
                           {txRef.substring(0, 10)}…{txRef.slice(-6)}
                         </span>
