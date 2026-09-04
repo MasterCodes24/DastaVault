@@ -64,25 +64,43 @@ function LoginForm({ onLoggedIn }) {
   const [otp, setOtp] = useState("");
   const [pendingUser, setPendingUser] = useState(null);
   const [verifying, setVerifying] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const needsOtp = [ROLES.POLICE, ROLES.LAWYER, ROLES.JUDGE].includes(role);
   const label = role === ROLES.ADMIN ? "Admin Username" : CREDENTIAL_LABEL[role] || "License ID";
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
-    const result = role === ROLES.ADMIN ? loginAdmin(credentialID, password) : loginWithCredential(credentialID, password);
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-    if (needsOtp) {
-      setPendingUser(result.user);
-      setOtpOpen(true);
-      setOtp("");
-    } else {
-      completeLogin(result.user);
-      onLoggedIn(result.user);
+    setLoading(true);
+    try {
+      const result = role === ROLES.ADMIN 
+        ? await loginAdmin(credentialID, password) 
+        : await loginWithCredential(credentialID, password);
+
+      if (!result.ok) {
+        setError(result.error || "Login failed. Please verify your credentials.");
+        return;
+      }
+
+      const loggedInUser = result.user;
+      if (role !== loggedInUser.role) {
+        setError(`This account is registered as ${loggedInUser.role}. Please select "${loggedInUser.role}" in the dropdown above.`);
+        return;
+      }
+
+      const needsOtp = [ROLES.POLICE, ROLES.LAWYER, ROLES.JUDGE].includes(loggedInUser.role);
+      if (needsOtp) {
+        setPendingUser(loggedInUser);
+        setOtpOpen(true);
+        setOtp("");
+      } else {
+        completeLogin(loggedInUser);
+        onLoggedIn(loggedInUser);
+      }
+    } catch (err) {
+      setError(err.message || "An unexpected error occurred during login.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -139,8 +157,9 @@ function LoginForm({ onLoggedIn }) {
             </p>
           )}
 
-          <Button type="submit" variant="accent" className="w-full">
-            Continue
+          <Button type="submit" variant="accent" className="w-full" disabled={loading}>
+            {loading ? <Loader2 size={16} className="animate-spin" /> : null}
+            {loading ? "Signing in…" : "Continue"}
           </Button>
         </form>
 
@@ -156,7 +175,7 @@ function LoginForm({ onLoggedIn }) {
           <div className="flex items-center gap-3 rounded-lg bg-vault-cyan/10 px-3.5 py-3 text-sm text-ink-600">
             <KeyRound size={18} className="text-vault-cyanDark" />
             A simulated 6-digit OTP has been sent to the registered phone number ending in{" "}
-            {pendingUser?.phone.slice(-4)}.
+            {pendingUser?.phone ? pendingUser.phone.slice(-4) : "••••"}.
           </div>
           <div>
             <Label>Enter OTP *</Label>
@@ -187,10 +206,11 @@ function RegisterForm({ onDone }) {
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const label = CREDENTIAL_LABEL[role];
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
     if (!name.trim() || !credentialID.trim() || !phone.trim() || !password.trim()) {
@@ -201,13 +221,20 @@ function RegisterForm({ onDone }) {
       setError("Enter a valid 10-digit phone number.");
       return;
     }
-    const result = registerUser({ name, role, credentialID, phone, password });
-    if (!result.ok) {
-      setError(result.error);
-      return;
+    setLoading(true);
+    try {
+      const result = await registerUser({ name, role, credentialID, phone, password });
+      if (!result.ok) {
+        setError(result.error || "Registration failed.");
+        return;
+      }
+      notify("Registration submitted. Await Admin approval before logging in.");
+      onDone();
+    } catch (err) {
+      setError(err.message || "An unexpected error occurred during registration.");
+    } finally {
+      setLoading(false);
     }
-    notify("Registration submitted. Await Admin approval before logging in.");
-    onDone();
   };
 
   return (
@@ -258,8 +285,9 @@ function RegisterForm({ onDone }) {
           </p>
         )}
 
-        <Button type="submit" variant="accent" className="w-full">
-          Submit registration
+        <Button type="submit" variant="accent" className="w-full" disabled={loading}>
+          {loading ? <Loader2 size={16} className="animate-spin" /> : null}
+          {loading ? "Submitting…" : "Submit registration"}
         </Button>
       </form>
     </div>

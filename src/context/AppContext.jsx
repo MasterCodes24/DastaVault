@@ -1,11 +1,102 @@
-import React, { createContext, useContext, useState, useCallback, useMemo } from "react";
+import React, { createContext, useContext, useState, useCallback, useMemo, useEffect } from "react";
 import { seedUsers, seedCases, seedDocuments, ROLES } from "../data/mockData";
-import { apiCreateCase, apiUploadDocument, apiVerifyDocument } from "../api/apiClient";
+import {
+  apiRegister,
+  apiLogin,
+  apiCreateCase,
+  apiFetchCases,
+  apiFetchUsers,
+  apiApproveUser,
+  apiRejectUser,
+  apiAssignUser,
+  apiUnassignUser,
+  apiAddCourtDate,
+  apiAddCaseNote,
+  apiAddVerdict,
+  apiUploadDocument,
+  apiVerifyDocument,
+} from "../api/apiClient";
 
 const AppContext = createContext(null);
 
 let idCounter = 1000;
 const nextId = (prefix) => `${prefix}-${idCounter++}`;
+
+// ─── Role normalization helpers ───────────────────────────────────────────────
+// DB stores lowercase ("police"), frontend displays "Police Officer"
+const ROLE_DB_TO_FRONTEND = {
+  admin: ROLES.ADMIN,
+  police: ROLES.POLICE,
+  lawyer: ROLES.LAWYER,
+  judge: ROLES.JUDGE,
+  forensic: ROLES.FORENSIC,
+};
+
+const ROLE_FRONTEND_TO_DB = Object.fromEntries(
+  Object.entries(ROLE_DB_TO_FRONTEND).map(([k, v]) => [v, k])
+);
+
+function normRoleToFrontend(dbRole) {
+  return ROLE_DB_TO_FRONTEND[dbRole?.toLowerCase()] || dbRole;
+}
+
+function normRoleToDB(frontendRole) {
+  return ROLE_FRONTEND_TO_DB[frontendRole] || frontendRole?.toLowerCase();
+}
+
+// DB stores "pending_approval" → frontend uses "PENDING_APPROVAL"
+function normStatus(dbStatus) {
+  if (!dbStatus) return "PENDING_APPROVAL";
+  return dbStatus.toUpperCase().replace(/-/g, "_");
+}
+
+// Map a DB user doc → frontend user shape
+function dbUserToFrontend(u) {
+  return {
+    id: u.id || u._id?.toString(),
+    dbId: u.dbId || u._id?.toString(),
+    name: u.name,
+    role: normRoleToFrontend(u.role),
+    credentialID: u.credentialID || u.credentialId,
+    phone: u.phone,
+    status: normStatus(u.status),
+    password: u.password || "",   // not returned from DB — kept for mock compat
+  };
+}
+
+// Map a DB case doc → frontend case shape
+function dbCaseToFrontend(c) {
+  return {
+    id: c.caseId || c._id?.toString(),
+    backendId: c.caseId || c._id?.toString(),
+    cnrNumber: c.CNR || c.cnrNumber || "",
+    FIR_NO: c.FIR_NO || "",
+    title: c.title || "",
+    type: c.type || "General",
+    description: c.description || "",
+    status: c.status || "REGISTERED",
+    openedBy: c.openedBy || null,
+    assignedUsers: c.assigned_users || c.assignedUsers || [],
+    progressStage: c.progressStage ?? 0,
+    milestoneDates: {
+      efir: c.milestoneDates?.efir || null,
+      forensics: c.milestoneDates?.forensics || null,
+      lawyers: c.milestoneDates?.lawyers || null,
+      hearings: c.milestoneDates?.hearings || null,
+      verdict: c.milestoneDates?.verdict || null,
+    },
+    courtDates: c.courtDates || [],
+    verdict: c.verdict?.verdictTitle
+      ? {
+          verdictTitle: c.verdict.verdictTitle,
+          fileUrl: c.verdict.fileUrl || "#",
+          uploadedAt: c.verdict.uploadedAt || new Date().toISOString(),
+        }
+      : null,
+    efir: c.efir?.number ? c.efir : null,
+    notes: c.notes || [],
+  };
+}
 
 export function AppProvider({ children }) {
   const [users, setUsers] = useState(seedUsers);
@@ -13,20 +104,84 @@ export function AppProvider({ children }) {
   const [documents, setDocuments] = useState(seedDocuments);
   const [currentUser, setCurrentUser] = useState(null);
   const [toast, setToast] = useState(null);
+  const [backendOnline, setBackendOnline] = useState(false);
 
   const notify = useCallback((message, tone = "success") => {
     setToast({ message, tone, id: Date.now() });
   }, []);
 
-  // ---------- AUTH ----------
+  // ─── Initial data load from MongoDB ──────────────────────────────────────
+  useEffect(() => {
+    async function loadInitialData() {
+      try {
+        // Load cases
+        const dbCases = await apiFetchCases();
+        if (Array.isArray(dbCases) && dbCases.length > 0) {
+          setCases((prev) => {
+            // Merge: keep seed data IDs that don't conflict, add DB cases
+            const dbMapped = dbCases.map(dbCaseToFrontend);
+            const seedFiltered = prev.filter(
+              (s) => !dbMapped.some((d) => d.id === s.id)
+            );
+            return [...dbMapped, ...seedFiltered];
+          });
+        }
+        setBackendOnline(true);
+      } catch {
+        // Backend not running — stay in offline/mock mode silently
+        setBackendOnline(false);
+      }
+
+      try {
+        // Load users
+        const dbUsers = await apiFetchUsers();
+        if (Array.isArray(dbUsers) && dbUsers.length > 0) {
+          setUsers((prev) => {
+            const dbMapped = dbUsers.map(dbUserToFrontend);
+            const seedFiltered = prev.filter(
+              (s) => !dbMapped.some((d) => d.credentialID === s.credentialID)
+            );
+            return [...dbMapped, ...seedFiltered];
+          });
+        }
+      } catch {
+        // Users endpoint failed — keep seed users
+      }
+    }
+
+    loadInitialData();
+  }, []);
+
+  // ─── AUTH ─────────────────────────────────────────────────────────────────
   const registerUser = useCallback(
-    ({ name, role, credentialID, phone, password }) => {
+    async ({ name, role, credentialID, phone, password }) => {
+      // Check local state first for immediate duplicate detection
       const exists = users.some(
-        (u) => u.credentialID.toLowerCase() === credentialID.toLowerCase()
+        (u) => u.credentialID?.toLowerCase() === credentialID?.toLowerCase()
       );
       if (exists) {
         return { ok: false, error: "A user with this credential ID already exists." };
       }
+
+      // Attempt to persist to backend
+      if (backendOnline) {
+        try {
+          const result = await apiRegister({
+            name,
+            role: normRoleToDB(role),
+            phone,
+            credentialId: credentialID,
+            password,
+          });
+          const newUser = dbUserToFrontend(result.user);
+          setUsers((prev) => [newUser, ...prev]);
+          return { ok: true, user: newUser };
+        } catch (err) {
+          return { ok: false, error: err.message };
+        }
+      }
+
+      // Fallback: local-only (backend offline)
       const newUser = {
         id: nextId("u"),
         name,
@@ -39,13 +194,53 @@ export function AppProvider({ children }) {
       setUsers((prev) => [newUser, ...prev]);
       return { ok: true, user: newUser };
     },
-    [users]
+    [users, backendOnline]
   );
 
   const loginWithCredential = useCallback(
-    (credentialID, password) => {
+    async (credentialID, password) => {
+      // Try backend login first
+      if (backendOnline) {
+        try {
+          const result = await apiLogin({ credentialId: credentialID, password });
+          const user = dbUserToFrontend(result.user);
+          // Sync user into local state
+          setUsers((prev) => {
+            const idx = prev.findIndex((u) => u.credentialID?.toLowerCase() === credentialID.toLowerCase());
+            if (idx === -1) return [user, ...prev];
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], ...user };
+            return updated;
+          });
+          return { ok: true, user };
+        } catch (err) {
+          // If backend returns an explicit approval or rejection error, preserve it
+          if (
+            err.message?.includes("pending Admin approval") ||
+            err.message?.includes("rejected by the admin")
+          ) {
+            return { ok: false, error: err.message };
+          }
+          // Check local seed / mock users if account was not found in DB or password failed in DB
+          const localUser = users.find(
+            (u) => u.credentialID?.toLowerCase() === credentialID?.toLowerCase()
+          );
+          if (localUser) {
+            if (localUser.password !== password) return { ok: false, error: "Incorrect password." };
+            if (localUser.status === "PENDING_APPROVAL")
+              return {
+                ok: false,
+                error: "Your registration is still pending Admin approval. Please check back later.",
+              };
+            return { ok: true, user: localUser };
+          }
+          return { ok: false, error: err.message };
+        }
+      }
+
+      // Fallback: local mock login
       const user = users.find(
-        (u) => u.credentialID.toLowerCase() === credentialID.toLowerCase()
+        (u) => u.credentialID?.toLowerCase() === credentialID?.toLowerCase()
       );
       if (!user) return { ok: false, error: "No account found with that credential ID." };
       if (user.password !== password) return { ok: false, error: "Incorrect password." };
@@ -56,66 +251,103 @@ export function AppProvider({ children }) {
         };
       return { ok: true, user };
     },
-    [users]
+    [users, backendOnline]
   );
 
   const loginAdmin = useCallback(
-    (username, password) => {
+    async (username, password) => {
+      if (backendOnline) {
+        try {
+          const result = await apiLogin({ credentialId: username, password });
+          const user = dbUserToFrontend(result.user);
+          return { ok: true, user };
+        } catch (err) {
+          if (
+            err.message?.includes("pending Admin approval") ||
+            err.message?.includes("rejected by the admin")
+          ) {
+            return { ok: false, error: err.message };
+          }
+        }
+      }
       const admin = users.find((u) => u.role === ROLES.ADMIN);
+      if (!admin) return { ok: false, error: "Admin account not configured." };
       if (username === admin.credentialID && password === admin.password) {
         return { ok: true, user: admin };
       }
       return { ok: false, error: "Invalid admin credentials." };
     },
-    [users]
+    [users, backendOnline]
   );
 
   const completeLogin = useCallback((user) => {
     setCurrentUser(user);
   }, []);
 
-  const logout = useCallback(() => setCurrentUser(null), []);
+  const logout = useCallback(() => {
+    setCurrentUser(null);
+    localStorage.removeItem("dv_token");
+  }, []);
 
-  // ---------- ADMIN ----------
-  const approveUser = useCallback((userId) => {
-    setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, status: "APPROVED" } : u)));
-    notify("User approved.");
-  }, [notify]);
+  // ─── ADMIN ────────────────────────────────────────────────────────────────
+  const approveUser = useCallback(
+    async (userId) => {
+      // Try backend
+      const user = users.find((u) => u.id === userId || u.dbId === userId);
+      const backendId = user?.dbId || user?.id;
 
-  const rejectUser = useCallback((userId) => {
-    setUsers((prev) => prev.filter((u) => u.id !== userId));
-    notify("User rejected and removed.", "danger");
-  }, [notify]);
+      if (backendOnline && backendId) {
+        try {
+          await apiApproveUser(backendId);
+        } catch (err) {
+          console.warn("Backend approve failed (local-only):", err.message);
+        }
+      }
 
-  // ---------- CASES ----------
+      setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, status: "APPROVED" } : u)));
+      notify("User approved.");
+    },
+    [users, backendOnline, notify]
+  );
+
+  const rejectUser = useCallback(
+    async (userId) => {
+      const user = users.find((u) => u.id === userId || u.dbId === userId);
+      const backendId = user?.dbId || user?.id;
+
+      if (backendOnline && backendId) {
+        try {
+          await apiRejectUser(backendId);
+        } catch (err) {
+          console.warn("Backend reject failed (local-only):", err.message);
+        }
+      }
+
+      setUsers((prev) => prev.filter((u) => u.id !== userId));
+      notify("User rejected and removed.", "danger");
+    },
+    [users, backendOnline, notify]
+  );
+
+  // ─── CASES ────────────────────────────────────────────────────────────────
   const createCase = useCallback(
     async ({ cnrNumber, title, type = "General", description = "", creatorId, efir }) => {
       try {
-        // Call the real backend API
-        const backendCase = await apiCreateCase({ title, type, description });
-        // Build the local case shape — merge backend ID + frontend-only fields
-        const newCase = {
-          id: backendCase.caseId,          // use backend's "CASE-2026-xxx" as the local id
-          backendId: backendCase.caseId,   // keep explicit reference for upload URL
-          cnrNumber,                        // frontend-only field, stored locally
-          title: backendCase.title,
-          type: backendCase.type,
-          description: backendCase.description || "",
-          status: efir ? "e-FIR Registered" : "REGISTERED",
-          assignedUsers: creatorId ? [creatorId] : [],
-          progressStage: efir ? 1 : 0,
-          milestoneDates: {
-            efir: efir ? new Date().toISOString() : null,
-            forensics: null,
-            lawyers: null,
-            hearings: null,
-            verdict: null,
-          },
-          courtDates: [],
-          verdict: null,
+        const backendCase = await apiCreateCase({
+          title,
+          type,
+          description,
+          openedBy: creatorId || null,
           efir: efir || null,
-          notes: [],
-        };
+          cnrNumber: cnrNumber || null,
+        });
+
+        const newCase = dbCaseToFrontend(backendCase);
+        // Override cnrNumber if user supplied one
+        if (cnrNumber) newCase.cnrNumber = cnrNumber;
+        // Preserve creator info
+        if (creatorId) newCase.assignedUsers = [...new Set([...(newCase.assignedUsers || []), creatorId])];
+
         setCases((prev) => [newCase, ...prev]);
         notify("Case folder created and saved to database.");
         return newCase;
@@ -128,15 +360,15 @@ export function AppProvider({ children }) {
   );
 
   const assignUserToCase = useCallback(
-    (caseId, userId) => {
+    async (caseId, userId) => {
+      // Optimistic local update
       setCases((prev) =>
         prev.map((c) => {
           if (c.id !== caseId) return c;
           if (c.assignedUsers.includes(userId)) return c;
           const user = users.find((u) => u.id === userId);
           const isLawyer = user?.role === ROLES.LAWYER;
-          const nextStage =
-            isLawyer && c.progressStage < 3 ? 3 : c.progressStage;
+          const nextStage = isLawyer && c.progressStage < 3 ? 3 : c.progressStage;
           return {
             ...c,
             assignedUsers: [...c.assignedUsers, userId],
@@ -151,23 +383,42 @@ export function AppProvider({ children }) {
           };
         })
       );
+
+      // Persist to backend
+      if (backendOnline) {
+        try {
+          await apiAssignUser(caseId, userId);
+        } catch (err) {
+          console.warn("Backend assign failed (local-only):", err.message);
+        }
+      }
     },
-    [users]
+    [users, backendOnline]
   );
 
-  // Revokes a user's access to a case folder (removes them from assignedUsers).
-  // Used by the Admin's Case Access Control panel.
-  const unassignUserFromCase = useCallback((caseId, userId) => {
-    setCases((prev) =>
-      prev.map((c) => {
-        if (c.id !== caseId) return c;
-        return { ...c, assignedUsers: c.assignedUsers.filter((id) => id !== userId) };
-      })
-    );
-  }, []);
+  const unassignUserFromCase = useCallback(
+    async (caseId, userId) => {
+      setCases((prev) =>
+        prev.map((c) => {
+          if (c.id !== caseId) return c;
+          return { ...c, assignedUsers: c.assignedUsers.filter((id) => id !== userId) };
+        })
+      );
+
+      if (backendOnline) {
+        try {
+          await apiUnassignUser(caseId, userId);
+        } catch (err) {
+          console.warn("Backend unassign failed (local-only):", err.message);
+        }
+      }
+    },
+    [backendOnline]
+  );
 
   const addCourtDate = useCallback(
-    (caseId, date, note) => {
+    async (caseId, date, note) => {
+      // Optimistic update
       setCases((prev) =>
         prev.map((c) => {
           if (c.id !== caseId) return c;
@@ -183,28 +434,50 @@ export function AppProvider({ children }) {
           };
         })
       );
+
+      if (backendOnline) {
+        try {
+          await apiAddCourtDate(caseId, { date, note });
+        } catch (err) {
+          console.warn("Backend court date failed (local-only):", err.message);
+        }
+      }
+
       notify("Court hearing date added.");
     },
-    [notify]
+    [backendOnline, notify]
   );
 
-  const addCaseNote = useCallback((caseId, authorId, text) => {
-    setCases((prev) =>
-      prev.map((c) => {
-        if (c.id !== caseId) return c;
-        const note = {
-          id: nextId("n"),
-          author: authorId,
-          text,
-          createdAt: new Date().toISOString(),
-        };
-        return { ...c, notes: [...(c.notes || []), note] };
-      })
-    );
-  }, []);
+  const addCaseNote = useCallback(
+    async (caseId, authorId, text) => {
+      const note = {
+        id: nextId("n"),
+        author: authorId,
+        text,
+        createdAt: new Date().toISOString(),
+      };
+
+      setCases((prev) =>
+        prev.map((c) => {
+          if (c.id !== caseId) return c;
+          return { ...c, notes: [...(c.notes || []), note] };
+        })
+      );
+
+      if (backendOnline) {
+        try {
+          await apiAddCaseNote(caseId, { author: authorId, text });
+        } catch (err) {
+          console.warn("Backend note failed (local-only):", err.message);
+        }
+      }
+    },
+    [backendOnline]
+  );
 
   const uploadVerdict = useCallback(
-    (caseId, { verdictTitle, fileUrl }) => {
+    async (caseId, { verdictTitle, fileUrl }) => {
+      // Optimistic update
       setCases((prev) =>
         prev.map((c) => {
           if (c.id !== caseId) return c;
@@ -217,26 +490,34 @@ export function AppProvider({ children }) {
           };
         })
       );
+
+      if (backendOnline) {
+        try {
+          await apiAddVerdict(caseId, { verdictTitle, fileUrl });
+        } catch (err) {
+          console.warn("Backend verdict failed (local-only):", err.message);
+        }
+      }
+
       notify("Verdict recorded and case closed.");
     },
-    [notify]
+    [backendOnline, notify]
   );
 
-  // ---------- DOCUMENTS ----------
+  // ─── DOCUMENTS ────────────────────────────────────────────────────────────
   const uploadDocument = useCallback(
     async ({ caseId, documentName, docType, uploadedBy, file }) => {
       try {
-        // The backend expects the backend caseId ("CASE-2026-xxx") in the URL
-        // caseId here is the local case id which we set to backendId on creation
         const result = await apiUploadDocument({
-          caseId,                   // e.g. "CASE-2026-1234567890"
+          caseId,
           title: documentName,
           documentType: docType,
-          file,                     // actual File object from the file input
+          file,
+          uploadedBy: uploadedBy || null,
         });
         const backendDoc = result.document;
         const newDoc = {
-          id: backendDoc.documentId,       // backend's "DOC-xxx"
+          id: backendDoc.documentId,
           documentId: backendDoc.documentId,
           caseId,
           documentName,
@@ -270,11 +551,11 @@ export function AppProvider({ children }) {
     [notify]
   );
 
-  // ---------- VERIFY DOCUMENT ----------
+  // ─── VERIFY DOCUMENT ──────────────────────────────────────────────────────
   const verifyDocument = useCallback(
     async (documentId) => {
       try {
-        const result = await apiVerifyDocument(documentId);
+        const result = await apiVerifyDocument(documentId, currentUser?.id);
         if (result.verified) {
           notify("✅ Document verified — integrity confirmed, not tampered.", "success");
         } else {
@@ -286,7 +567,7 @@ export function AppProvider({ children }) {
         return null;
       }
     },
-    [notify]
+    [currentUser, notify]
   );
 
   const getUserById = useCallback((id) => users.find((u) => u.id === id), [users]);
@@ -310,6 +591,7 @@ export function AppProvider({ children }) {
       toast,
       setToast,
       notify,
+      backendOnline,
       registerUser,
       loginWithCredential,
       loginAdmin,
@@ -336,6 +618,7 @@ export function AppProvider({ children }) {
       currentUser,
       toast,
       notify,
+      backendOnline,
       registerUser,
       loginWithCredential,
       loginAdmin,
