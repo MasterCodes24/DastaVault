@@ -1,17 +1,33 @@
 import React, { useMemo, useState } from "react";
-import { Search, Folder, FileText, ChevronRight, ArrowLeft, User2, ShieldCheck } from "lucide-react";
+import {
+  Search,
+  Folder,
+  FileText,
+  ChevronRight,
+  ArrowLeft,
+  User2,
+  ShieldCheck,
+  GitBranch,
+  Activity,
+  History,
+  Wifi,
+} from "lucide-react";
 import { useApp } from "../../context/AppContext";
 import Badge, { statusTone } from "./Badge";
 import CaseTrackingProgress from "./CaseTrackingProgress";
+import DocumentVersionModal from "./DocumentVersionModal";
+import CaseAuditTrail from "./CaseAuditTrail";
 import { formatDateTime } from "../../utils/format";
 import { mockFetchFir } from "../../utils/mockApi";
 
 export default function CaseFolderBrowser({ cases, title = "Case Folders", extraPanel }) {
-  const { getCaseDocuments, getUserById, verifyDocument } = useApp();
+  const { getCaseDocuments, getUserById, verifyDocument, blockchainStatus } = useApp();
   const [query, setQuery] = useState("");
   const [docQuery, setDocQuery] = useState("");
   const [activeCaseId, setActiveCaseId] = useState(null);
+  const [activeCaseTab, setActiveCaseTab] = useState("documents"); // 'documents' | 'audit'
   const [viewingEfir, setViewingEfir] = useState(null);
+  const [versionModalDoc, setVersionModalDoc] = useState(null);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return cases;
@@ -54,10 +70,27 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
           >
             <ArrowLeft size={16} /> Back to {title}
           </button>
-          <Badge tone={statusTone(activeCase.status)}>{activeCase.status}</Badge>
+          
+          <div className="flex items-center gap-2.5">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                blockchainStatus?.isLive
+                  ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                  : "bg-amber-50 text-amber-700 border border-amber-200"
+              }`}
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  blockchainStatus?.isLive ? "bg-emerald-500 animate-pulse" : "bg-amber-500"
+                }`}
+              />
+              {blockchainStatus?.networkName || "Offline"}
+            </span>
+            <Badge tone={statusTone(activeCase.status)}>{activeCase.status}</Badge>
+          </div>
         </div>
 
-        <div className="space-y-8 p-6">
+        <div className="space-y-6 p-6">
           <div>
             <p className="font-mono text-xs font-semibold tracking-wide text-vault-cyanDark">
               {activeCase.cnrNumber}
@@ -85,7 +118,35 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
 
           {extraPanel && extraPanel(activeCase)}
 
-          {viewingEfir ? (
+          {/* Tab Switcher for Active Case: Documents vs Audit Trail */}
+          <div className="flex border-b border-line">
+            <button
+              onClick={() => setActiveCaseTab("documents")}
+              className={`flex items-center gap-2 border-b-2 px-5 py-3 text-sm font-semibold transition ${
+                activeCaseTab === "documents"
+                  ? "border-vault-cyan text-ink-900"
+                  : "border-transparent text-ink-400 hover:text-ink-700"
+              }`}
+            >
+              <FileText size={16} />
+              Documents & Evidence ({docs.length})
+            </button>
+            <button
+              onClick={() => setActiveCaseTab("audit")}
+              className={`flex items-center gap-2 border-b-2 px-5 py-3 text-sm font-semibold transition ${
+                activeCaseTab === "audit"
+                  ? "border-vault-cyan text-ink-900"
+                  : "border-transparent text-ink-400 hover:text-ink-700"
+              }`}
+            >
+              <Activity size={16} />
+              Audit Trail & Blockchain Custody
+            </button>
+          </div>
+
+          {activeCaseTab === "audit" ? (
+            <CaseAuditTrail caseId={activeCase.id || activeCase.caseId} />
+          ) : viewingEfir ? (
             <div className="rounded-xl border border-vault-cyan/30 bg-white shadow-card">
               <div className="flex items-center justify-between border-b border-line px-5 py-4">
                 <div className="flex items-center gap-3">
@@ -160,18 +221,28 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
                     const uploader = getUserById(d.uploadedBy);
                     const isEfir = d.docType === "e-FIR" || d.isVirtualEfir;
                     return (
-                      <li key={d.id} className="flex items-center gap-3 bg-white px-4 py-3 hover:bg-paper/60">
+                      <li key={d.id} className="flex flex-wrap items-center gap-3 bg-white px-4 py-3 hover:bg-paper/60">
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ink-50 text-ink-500">
                           <FileText size={16} />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-semibold text-ink-900">{d.documentName}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="truncate text-sm font-semibold text-ink-900">{d.documentName}</p>
+                            {!isEfir && (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-vault-cyan/15 px-2 py-0.5 text-xs font-bold text-vault-cyanDark">
+                                <GitBranch size={11} />
+                                v{d.version || 1}
+                              </span>
+                            )}
+                          </div>
                           <p className="truncate text-xs text-ink-400">
-                            {d.docType} · Uploaded by {uploader?.name || "Unknown"} · {formatDateTime(d.uploadedAt)}
+                            {d.docType} · Uploaded by {uploader?.name || "Officer / System"} · {formatDateTime(d.uploadedAt)}
                           </p>
                         </div>
+
                         <Badge tone="neutral">{d.docType}</Badge>
-                        <div className="flex gap-2">
+
+                        <div className="flex items-center gap-1.5">
                           {isEfir ? (
                             <button
                               onClick={() => {
@@ -184,6 +255,15 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
                             </button>
                           ) : d.documentId ? (
                             <>
+                              <button
+                                onClick={() => setVersionModalDoc(d)}
+                                title="Open version control and history"
+                                className="flex items-center gap-1 rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs font-semibold text-ink-700 transition hover:bg-paper/70"
+                              >
+                                <History size={13} className="text-vault-cyanDark" />
+                                Versions (v{d.version || 1})
+                              </button>
+
                               <a
                                 href={`http://localhost:5000/api/documents/${d.documentId}/view`}
                                 target="_blank"
@@ -192,6 +272,7 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
                               >
                                 View
                               </a>
+
                               <button
                                 onClick={() => verifyDocument(d.documentId)}
                                 title="Verify document integrity against blockchain record"
@@ -211,6 +292,14 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
             </div>
           )}
         </div>
+
+        {/* Document Version Control Modal */}
+        <DocumentVersionModal
+          isOpen={!!versionModalDoc}
+          onClose={() => setVersionModalDoc(null)}
+          document={versionModalDoc}
+          caseItem={activeCase}
+        />
       </div>
     );
   }

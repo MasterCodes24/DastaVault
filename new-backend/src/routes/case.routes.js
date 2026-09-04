@@ -1,11 +1,17 @@
 const express = require("express");
 const Case = require("../models/Case");
+const AuditLog = require("../models/AuditLog");
 
 const router = express.Router();
 
-// ─────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────
+async function logCaseAudit({ actionType, actor, caseId, details }) {
+    try {
+        await AuditLog.create({ actionType, actor: actor || null, caseId, details });
+    } catch (err) {
+        console.warn("Case audit log failed:", err.message);
+    }
+}
 
 /** Generate Case Number Reference: MHCC01-<year>-<random 6 digits> */
 function generateCNR() {
@@ -68,6 +74,13 @@ router.post("/", async (req, res) => {
             efir: efir || { number: null, firDate: null },
             milestoneDates,
             progressStage: efir ? 1 : progressStage
+        });
+
+        await logCaseAudit({
+            actionType: "status_change",
+            actor: openedBy,
+            caseId,
+            details: `Case created: "${title}" [${CNR}]`
         });
 
         res.status(201).json(newCase);
@@ -195,6 +208,12 @@ router.post("/:caseId/court-dates", async (req, res) => {
             await caseDoc.save();
         }
 
+        await logCaseAudit({
+            actionType: "status_change",
+            caseId: req.params.caseId,
+            details: `Court hearing scheduled for ${date}. Notes: ${note || "None"}`
+        });
+
         res.json({ message: "Court date added.", case: caseDoc });
 
     } catch (error) {
@@ -229,6 +248,13 @@ router.post("/:caseId/verdict", async (req, res) => {
         );
 
         if (!caseDoc) return res.status(404).json({ message: "Case not found." });
+
+        await logCaseAudit({
+            actionType: "close",
+            actor: judge,
+            caseId: req.params.caseId,
+            details: `Final verdict delivered: "${verdictTitle}". Case sealed and closed.`
+        });
 
         res.json({ message: "Verdict recorded. Case closed.", case: caseDoc });
 

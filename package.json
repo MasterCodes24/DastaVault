@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "dev:all": "concurrently \"npm run dev\" \"cd new-backend && npm run dev\"",
+    "node:local": "cd blockchain && npx hardhat node",
+    "deploy:local": "cd blockchain && npx hardhat run scripts/deploy.cjs --network localhost",
+    "deploy:sepolia": "cd blockchain && npx hardhat run scripts/deploy.cjs --network sepolia",
     "build": "vite build",
     "lint": "oxlint",
     "preview": "vite preview"

@@ -63,6 +63,24 @@ const documentSchema = new mongoose.Schema(
             default: 1
         },
 
+        // Full version control history for this document
+        versions: [
+            {
+                version: { type: Number, required: true },
+                filePath: { type: String, required: true },
+                fileName: { type: String, default: "" },
+                hash: { type: String, required: true },
+                storageUri: { type: String, default: "" },
+                blockchain: {
+                    transactionId: { type: String, default: null },
+                    blockNumber: { type: Number, default: null }
+                },
+                uploadedBy: { type: String, default: null },
+                changeNote: { type: String, default: "" },
+                createdAt: { type: Date, default: Date.now }
+            }
+        ],
+
         // Absolute path on disk
         filePath: {
             type: String,

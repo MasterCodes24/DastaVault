@@ -14,7 +14,13 @@ import {
   apiAddCaseNote,
   apiAddVerdict,
   apiUploadDocument,
+  apiUploadDocumentVersion,
+  apiFetchDocumentVersions,
   apiVerifyDocument,
+  apiVerifyDocumentVersion,
+  apiFetchCaseDocuments,
+  apiFetchBlockchainStatus,
+  apiFetchCaseAudit,
 } from "../api/apiClient";
 
 const AppContext = createContext(null);
@@ -105,9 +111,25 @@ export function AppProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null);
   const [toast, setToast] = useState(null);
   const [backendOnline, setBackendOnline] = useState(false);
+  const [blockchainStatus, setBlockchainStatus] = useState({
+    isLive: false,
+    networkName: "Checking...",
+    chainId: null,
+    rpcUrl: "",
+    contractAddress: ""
+  });
 
   const notify = useCallback((message, tone = "success") => {
     setToast({ message, tone, id: Date.now() });
+  }, []);
+
+  const refreshBlockchainStatus = useCallback(async () => {
+    try {
+      const status = await apiFetchBlockchainStatus();
+      if (status) setBlockchainStatus(status);
+    } catch {
+      setBlockchainStatus((prev) => ({ ...prev, isLive: false, networkName: "Offline / Disconnected" }));
+    }
   }, []);
 
   // ─── Initial data load from MongoDB ──────────────────────────────────────
@@ -125,6 +147,37 @@ export function AppProvider({ children }) {
             );
             return [...dbMapped, ...seedFiltered];
           });
+
+          // Also load documents for DB cases
+          for (const c of dbCases) {
+            const cid = c.caseId || c.id;
+            try {
+              const caseDocs = await apiFetchCaseDocuments(cid);
+              if (Array.isArray(caseDocs) && caseDocs.length > 0) {
+                const mapped = caseDocs.map((d) => ({
+                  id: d.documentId,
+                  documentId: d.documentId,
+                  caseId: d.caseId,
+                  documentName: d.title || d.docName,
+                  docType: d.documentType || d.docType,
+                  version: d.version || 1,
+                  versions: d.versions || [],
+                  uploadedBy: d.uploadedBy,
+                  uploadedAt: d.createdAt,
+                  fileUrl: "#",
+                  fileName: d.title,
+                  hash: d.hash,
+                  blockchain: d.blockchain,
+                }));
+                setDocuments((prev) => {
+                  const filtered = prev.filter((p) => !mapped.some((m) => m.documentId === p.documentId));
+                  return [...mapped, ...filtered];
+                });
+              }
+            } catch {
+              // Ignore individual case doc load error
+            }
+          }
         }
         setBackendOnline(true);
       } catch {
@@ -147,10 +200,13 @@ export function AppProvider({ children }) {
       } catch {
         // Users endpoint failed — keep seed users
       }
+
+      // Check blockchain status
+      refreshBlockchainStatus();
     }
 
     loadInitialData();
-  }, []);
+  }, [refreshBlockchainStatus]);
 
   // ─── AUTH ─────────────────────────────────────────────────────────────────
   const registerUser = useCallback(
@@ -522,11 +578,24 @@ export function AppProvider({ children }) {
           caseId,
           documentName,
           docType,
+          version: backendDoc.version || 1,
+          versions: backendDoc.versions || [
+            {
+              version: 1,
+              fileName: file.name,
+              hash: backendDoc.hash,
+              blockchain: backendDoc.blockchain,
+              uploadedBy,
+              changeNote: "Initial document upload (v1)",
+              createdAt: backendDoc.createdAt || new Date().toISOString()
+            }
+          ],
           uploadedBy,
           uploadedAt: backendDoc.createdAt || new Date().toISOString(),
           fileUrl: "#",
           fileName: file.name,
           hash: backendDoc.hash,
+          blockchain: backendDoc.blockchain,
         };
         setDocuments((prev) => [newDoc, ...prev]);
         setCases((prev) =>
@@ -541,25 +610,67 @@ export function AppProvider({ children }) {
             return { ...c, progressStage, milestoneDates };
           })
         );
-        notify("Document uploaded and registered on blockchain.");
+        notify(`Document "${documentName}" anchored on blockchain (v1).`);
+        refreshBlockchainStatus();
         return newDoc;
       } catch (err) {
         notify(err.message || "Upload failed. Is the backend running?", "danger");
         return null;
       }
     },
-    [notify]
+    [notify, refreshBlockchainStatus]
   );
 
-  // ─── VERIFY DOCUMENT ──────────────────────────────────────────────────────
+  // ─── UPLOAD DOCUMENT VERSION ──────────────────────────────────────────────
+  const uploadDocumentVersion = useCallback(
+    async ({ caseId, documentId, file, changeNote }) => {
+      try {
+        const result = await apiUploadDocumentVersion({
+          caseId,
+          documentId,
+          file,
+          changeNote,
+          uploadedBy: currentUser?.id || currentUser?.credentialID || null,
+        });
+
+        const updatedDoc = result.document;
+        const newVersionEntry = result.version;
+
+        setDocuments((prev) =>
+          prev.map((d) => {
+            if (d.documentId !== documentId) return d;
+            return {
+              ...d,
+              version: updatedDoc.version,
+              versions: updatedDoc.versions || [...(d.versions || []), newVersionEntry],
+              hash: updatedDoc.hash,
+              fileName: file.name,
+              blockchain: updatedDoc.blockchain,
+              uploadedAt: updatedDoc.updatedAt || new Date().toISOString(),
+            };
+          })
+        );
+
+        notify(`Version ${updatedDoc.version} anchored on blockchain!`);
+        refreshBlockchainStatus();
+        return result;
+      } catch (err) {
+        notify(err.message || "Version upload failed.", "danger");
+        return null;
+      }
+    },
+    [currentUser, notify, refreshBlockchainStatus]
+  );
+
+  // ─── VERIFY DOCUMENT (LATEST) ─────────────────────────────────────────────
   const verifyDocument = useCallback(
     async (documentId) => {
       try {
         const result = await apiVerifyDocument(documentId, currentUser?.id);
         if (result.verified) {
-          notify("✅ Document verified — integrity confirmed, not tampered.", "success");
+          notify(`✅ Verified — Integrity intact (${result.onChain ? "on-chain smart contract" : "ledger"}).`, "success");
         } else {
-          notify("⚠️ TAMPERED — hash mismatch detected! Document may be compromised.", "danger");
+          notify("⚠️ TAMPERED — Hash mismatch detected! Document may be altered.", "danger");
         }
         return result;
       } catch (err) {
@@ -569,6 +680,35 @@ export function AppProvider({ children }) {
     },
     [currentUser, notify]
   );
+
+  // ─── VERIFY DOCUMENT (SPECIFIC VERSION) ───────────────────────────────────
+  const verifyDocumentVersion = useCallback(
+    async (documentId, version) => {
+      try {
+        const result = await apiVerifyDocumentVersion(documentId, version, currentUser?.id);
+        if (result.verified) {
+          notify(`✅ Version ${version} verified — Integrity intact (${result.onChain ? "on-chain smart contract" : "ledger"}).`, "success");
+        } else {
+          notify(`⚠️ Version ${version} TAMPERED — Hash mismatch detected!`, "danger");
+        }
+        return result;
+      } catch (err) {
+        notify(err.message || "Version verification failed.", "danger");
+        return null;
+      }
+    },
+    [currentUser, notify]
+  );
+
+  // ─── AUDIT TRAILS ─────────────────────────────────────────────────────────
+  const fetchCaseAuditLogs = useCallback(async (caseId) => {
+    try {
+      return await apiFetchCaseAudit(caseId);
+    } catch (err) {
+      console.warn("Audit fetch failed:", err.message);
+      return [];
+    }
+  }, []);
 
   const getUserById = useCallback((id) => users.find((u) => u.id === id), [users]);
 
@@ -592,6 +732,8 @@ export function AppProvider({ children }) {
       setToast,
       notify,
       backendOnline,
+      blockchainStatus,
+      refreshBlockchainStatus,
       registerUser,
       loginWithCredential,
       loginAdmin,
@@ -606,7 +748,10 @@ export function AppProvider({ children }) {
       addCaseNote,
       uploadVerdict,
       uploadDocument,
+      uploadDocumentVersion,
       verifyDocument,
+      verifyDocumentVersion,
+      fetchCaseAuditLogs,
       getUserById,
       getCaseDocuments,
       getCasesForUser,
@@ -619,6 +764,8 @@ export function AppProvider({ children }) {
       toast,
       notify,
       backendOnline,
+      blockchainStatus,
+      refreshBlockchainStatus,
       registerUser,
       loginWithCredential,
       loginAdmin,
@@ -633,7 +780,10 @@ export function AppProvider({ children }) {
       addCaseNote,
       uploadVerdict,
       uploadDocument,
+      uploadDocumentVersion,
       verifyDocument,
+      verifyDocumentVersion,
+      fetchCaseAuditLogs,
       getUserById,
       getCaseDocuments,
       getCasesForUser,

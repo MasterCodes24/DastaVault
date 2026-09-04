@@ -8,7 +8,14 @@ const Case = require("../models/Case");
 const AuditLog = require("../models/AuditLog");
 
 const { calculateFileHash } = require("../services/hash.service");
-const { registerDocument, getDocumentRecord } = require("../services/blockchain.service");
+const {
+    registerDocument,
+    registerDocumentVersion,
+    verifyDocumentOnChain,
+    verifyDocumentVersionOnChain,
+    getNetworkStatus,
+    getDocumentRecord
+} = require("../services/blockchain.service");
 
 const router = express.Router();
 
@@ -21,7 +28,7 @@ if (!fs.existsSync(uploadDir)) {
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => {
-        const uniqueName = Date.now() + "-" + file.originalname;
+        const uniqueName = Date.now() + "-" + file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
         cb(null, uniqueName);
     }
 });
@@ -38,10 +45,22 @@ async function createAuditLog({ actionType, actor, caseId, documentId, blockchai
 }
 
 // ─────────────────────────────────────────────────
+// GET /api/blockchain/status
+// Returns current blockchain connection status (localhost / sepolia / offline)
+// ─────────────────────────────────────────────────
+router.get("/blockchain/status", async (req, res) => {
+    try {
+        const status = await getNetworkStatus();
+        res.json(status);
+    } catch (error) {
+        res.status(500).json({ isLive: false, error: error.message });
+    }
+});
+
+// ─────────────────────────────────────────────────
 // POST /api/cases/:caseId/documents
-// Uploads a document, hashes it, registers on blockchain,
-// saves to MongoDB, creates AuditLog entry.
-// Body (multipart): document (File), title, documentType, uploadedBy?
+// Uploads a document (v1), hashes it, registers on blockchain,
+// saves to MongoDB with versions array, creates AuditLog entry.
 // ─────────────────────────────────────────────────
 router.post(
     "/cases/:caseId/documents",
@@ -63,10 +82,31 @@ router.post(
             const documentId = "DOC-" + Date.now();
             const hash = calculateFileHash(req.file.path);
 
-            const blockchainRecord = registerDocument({ documentId, caseId, hash, version: 1 });
+            const blockchainRecord = await registerDocument({
+                documentId,
+                caseId,
+                hash,
+                version: 1,
+                storageUri: req.file.path
+            });
 
-            // Normalize documentType — accept either old or new enum values
+            // Normalize documentType
             const normalizedDocType = normalizeDocType(documentType);
+
+            const initialVersion = {
+                version: 1,
+                filePath: req.file.path,
+                fileName: req.file.originalname,
+                hash,
+                storageUri: req.file.path,
+                blockchain: {
+                    transactionId: blockchainRecord.transactionId,
+                    blockNumber: blockchainRecord.blockNumber
+                },
+                uploadedBy,
+                changeNote: "Initial document upload (v1)",
+                createdAt: new Date()
+            };
 
             const document = await Document.create({
                 documentId,
@@ -77,6 +117,7 @@ router.post(
                 documentType: normalizedDocType,
                 docType: normalizedDocType,
                 version: 1,
+                versions: [initialVersion],
                 filePath: req.file.path,
                 hash,
                 hashCode: hash,
@@ -107,7 +148,7 @@ router.post(
                 caseId,
                 documentId,
                 blockchainRef: blockchainRecord.transactionId,
-                details: `Uploaded "${title}" (${normalizedDocType})`
+                details: `Uploaded initial v1 of "${title}" (${normalizedDocType})`
             });
 
             res.status(201).json({
@@ -123,9 +164,144 @@ router.post(
 );
 
 // ─────────────────────────────────────────────────
+// POST /api/cases/:caseId/documents/:documentId/version
+// Uploads a new version of an existing document, hashes it,
+// anchors it on blockchain, updates MongoDB version history and latest fields.
+// ─────────────────────────────────────────────────
+router.post(
+    "/cases/:caseId/documents/:documentId/version",
+    upload.single("document"),
+    async (req, res) => {
+        try {
+            const { caseId, documentId } = req.params;
+            const { changeNote = "", uploadedBy = null } = req.body;
+
+            const document = await Document.findOne({ documentId, caseId });
+            if (!document) {
+                return res.status(404).json({ message: "Document not found" });
+            }
+
+            if (!req.file) {
+                return res.status(400).json({ message: "Updated document file is required" });
+            }
+
+            const nextVersion = (document.version || 1) + 1;
+            const hash = calculateFileHash(req.file.path);
+
+            const blockchainRecord = await registerDocumentVersion({
+                documentId,
+                caseId,
+                hash,
+                version: nextVersion,
+                storageUri: req.file.path
+            });
+
+            const versionEntry = {
+                version: nextVersion,
+                filePath: req.file.path,
+                fileName: req.file.originalname,
+                hash,
+                storageUri: req.file.path,
+                blockchain: {
+                    transactionId: blockchainRecord.transactionId,
+                    blockNumber: blockchainRecord.blockNumber
+                },
+                uploadedBy,
+                changeNote: changeNote || `Version ${nextVersion} revision`,
+                createdAt: new Date()
+            };
+
+            // If versions array was empty (from earlier mock uploads), backfill v1 first
+            if (!document.versions || document.versions.length === 0) {
+                document.versions = [{
+                    version: document.version || 1,
+                    filePath: document.filePath,
+                    fileName: document.title,
+                    hash: document.hash,
+                    blockchain: document.blockchain || { transactionId: document.blockchainTxRef },
+                    uploadedBy: document.uploadedBy,
+                    changeNote: "Initial version",
+                    createdAt: document.createdAt || new Date()
+                }];
+            }
+
+            document.versions.push(versionEntry);
+            document.version = nextVersion;
+            document.filePath = req.file.path;
+            document.hash = hash;
+            document.hashCode = hash;
+            document.blockchain = {
+                transactionId: blockchainRecord.transactionId,
+                blockNumber: blockchainRecord.blockNumber
+            };
+            document.blockchainTxRef = blockchainRecord.transactionId;
+
+            await document.save();
+
+            // Audit log
+            await createAuditLog({
+                actionType: "version_upload",
+                actor: uploadedBy,
+                caseId,
+                documentId,
+                blockchainRef: blockchainRecord.transactionId,
+                details: `Uploaded version ${nextVersion} for "${document.title}". Note: ${changeNote || "None"}`
+            });
+
+            res.status(201).json({
+                message: `Version ${nextVersion} anchored successfully`,
+                document,
+                version: versionEntry
+            });
+
+        } catch (error) {
+            console.error("Version upload error:", error);
+            res.status(500).json({ message: "Version upload failed", error: error.message });
+        }
+    }
+);
+
+// ─────────────────────────────────────────────────
+// GET /api/documents/:documentId/versions
+// Returns complete version history of a document
+// ─────────────────────────────────────────────────
+router.get("/documents/:documentId/versions", async (req, res) => {
+    try {
+        const { documentId } = req.params;
+        const document = await Document.findOne({ documentId });
+        if (!document) {
+            return res.status(404).json({ message: "Document not found" });
+        }
+
+        let versions = document.versions || [];
+        if (versions.length === 0) {
+            versions = [{
+                version: document.version || 1,
+                filePath: document.filePath,
+                fileName: document.title,
+                hash: document.hash,
+                blockchain: document.blockchain || { transactionId: document.blockchainTxRef },
+                uploadedBy: document.uploadedBy,
+                changeNote: "Initial upload",
+                createdAt: document.createdAt || new Date()
+            }];
+        }
+
+        res.json({
+            documentId,
+            title: document.title,
+            currentVersion: document.version || 1,
+            versions
+        });
+    } catch (error) {
+        console.error("Fetch versions error:", error);
+        res.status(500).json({ message: "Failed to fetch version history", error: error.message });
+    }
+});
+
+// ─────────────────────────────────────────────────
 // POST /api/documents/:documentId/verify
-// Verifies document integrity against blockchain hash.
-// Creates AuditLog entry.
+// Verifies latest document integrity against on-chain smart contract hash.
 // ─────────────────────────────────────────────────
 router.post("/documents/:documentId/verify", async (req, res) => {
     try {
@@ -137,14 +313,15 @@ router.post("/documents/:documentId/verify", async (req, res) => {
             return res.status(404).json({ message: "Document not found" });
         }
 
-        const currentHash = calculateFileHash(document.filePath);
-        const blockchainRecord = getDocumentRecord(documentId);
-
-        if (!blockchainRecord) {
-            return res.status(404).json({ message: "Blockchain record not found" });
+        if (!fs.existsSync(document.filePath)) {
+            return res.status(404).json({ message: "File not found on storage disk" });
         }
 
-        const verified = currentHash === blockchainRecord.hash;
+        const currentHash = calculateFileHash(document.filePath);
+        const onChain = await verifyDocumentOnChain(document.caseId, documentId);
+
+        const targetHash = onChain?.hash || document.hash;
+        const verified = currentHash === targetHash;
 
         // Audit log
         await createAuditLog({
@@ -152,16 +329,17 @@ router.post("/documents/:documentId/verify", async (req, res) => {
             actor,
             caseId: document.caseId,
             documentId,
-            blockchainRef: blockchainRecord.transactionId,
-            details: `Verification result: ${verified ? "VERIFIED" : "TAMPERED"}`
+            blockchainRef: document.blockchain?.transactionId || document.blockchainTxRef,
+            details: `Verification result: ${verified ? "VERIFIED" : "TAMPERED"} (On-chain: ${!!onChain?.onChain})`
         });
 
         res.json({
             documentId,
             currentHash,
-            blockchainHash: blockchainRecord.hash,
+            blockchainHash: targetHash,
             verified,
-            status: verified ? "VERIFIED" : "TAMPERED"
+            status: verified ? "VERIFIED" : "TAMPERED",
+            onChain: !!onChain?.onChain
         });
 
     } catch (error) {
@@ -171,8 +349,135 @@ router.post("/documents/:documentId/verify", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────
+// POST /api/documents/:documentId/versions/:version/verify
+// Verifies specific version integrity against on-chain smart contract hash.
+// ─────────────────────────────────────────────────
+router.post("/documents/:documentId/versions/:version/verify", async (req, res) => {
+    try {
+        const { documentId, version } = req.params;
+        const { actor = null } = req.body;
+        const verNum = Number(version);
+
+        const document = await Document.findOne({ documentId });
+        if (!document) {
+            return res.status(404).json({ message: "Document not found" });
+        }
+
+        const versionDoc = document.versions?.find(v => v.version === verNum);
+        const targetPath = versionDoc?.filePath || (document.version === verNum ? document.filePath : null);
+        const recordedHash = versionDoc?.hash || (document.version === verNum ? document.hash : null);
+
+        if (!targetPath || !fs.existsSync(targetPath)) {
+            return res.status(404).json({ message: `Version ${version} file not found on disk` });
+        }
+
+        const currentHash = calculateFileHash(targetPath);
+        const onChainRecord = await verifyDocumentVersionOnChain(document.caseId, documentId, verNum);
+
+        const targetHash = onChainRecord?.hash || recordedHash;
+        const verified = currentHash === targetHash;
+
+        // Audit log
+        await createAuditLog({
+            actionType: "verify",
+            actor,
+            caseId: document.caseId,
+            documentId,
+            blockchainRef: versionDoc?.blockchain?.transactionId || null,
+            details: `Integrity check for version ${version} of "${document.title}": ${verified ? "VERIFIED" : "TAMPERED"}`
+        });
+
+        res.json({
+            documentId,
+            version: verNum,
+            currentHash,
+            blockchainHash: targetHash,
+            verified,
+            status: verified ? "VERIFIED" : "TAMPERED",
+            onChain: !!onChainRecord?.onChain
+        });
+
+    } catch (error) {
+        console.error("Version verification error:", error);
+        res.status(500).json({ message: "Version verification failed", error: error.message });
+    }
+});
+
+// ─────────────────────────────────────────────────
+// GET /api/documents/:documentId/versions/:version/download
+// Downloads a specific version of a document
+// ─────────────────────────────────────────────────
+router.get("/documents/:documentId/versions/:version/download", async (req, res) => {
+    try {
+        const { documentId, version } = req.params;
+        const { actor = null } = req.query;
+        const verNum = Number(version);
+
+        const document = await Document.findOne({ documentId });
+        if (!document) {
+            return res.status(404).json({ message: "Document not found" });
+        }
+
+        const versionDoc = document.versions?.find(v => v.version === verNum);
+        const targetPath = versionDoc?.filePath || (document.version === verNum ? document.filePath : null);
+
+        if (!targetPath || !fs.existsSync(targetPath)) {
+            return res.status(404).json({ message: `Version ${version} file not found` });
+        }
+
+        await createAuditLog({
+            actionType: "access",
+            actor,
+            caseId: document.caseId,
+            documentId,
+            details: `Downloaded version ${version} of "${document.title}"`
+        });
+
+        res.download(targetPath, `v${verNum}-${versionDoc?.fileName || document.title}`);
+    } catch (error) {
+        res.status(500).json({ message: "Version download failed", error: error.message });
+    }
+});
+
+// ─────────────────────────────────────────────────
+// GET /api/documents/:documentId/versions/:version/view
+// View inline a specific version of a document
+// ─────────────────────────────────────────────────
+router.get("/documents/:documentId/versions/:version/view", async (req, res) => {
+    try {
+        const { documentId, version } = req.params;
+        const { actor = null } = req.query;
+        const verNum = Number(version);
+
+        const document = await Document.findOne({ documentId });
+        if (!document) {
+            return res.status(404).json({ message: "Document not found" });
+        }
+
+        const versionDoc = document.versions?.find(v => v.version === verNum);
+        const targetPath = versionDoc?.filePath || (document.version === verNum ? document.filePath : null);
+
+        if (!targetPath || !fs.existsSync(targetPath)) {
+            return res.status(404).json({ message: `Version ${version} file not found` });
+        }
+
+        await createAuditLog({
+            actionType: "access",
+            actor,
+            caseId: document.caseId,
+            documentId,
+            details: `Viewed version ${version} of "${document.title}"`
+        });
+
+        res.sendFile(path.resolve(targetPath));
+    } catch (error) {
+        res.status(500).json({ message: "Version view failed", error: error.message });
+    }
+});
+
+// ─────────────────────────────────────────────────
 // GET /api/documents/:documentId/download
-// Downloads a document file. Creates AuditLog entry.
+// Downloads latest document file. Creates AuditLog entry.
 // ─────────────────────────────────────────────────
 router.get("/documents/:documentId/download", async (req, res) => {
     try {
@@ -190,7 +495,7 @@ router.get("/documents/:documentId/download", async (req, res) => {
             actor,
             caseId: document.caseId,
             documentId,
-            details: `Downloaded "${document.title}"`
+            details: `Downloaded "${document.title}" (v${document.version || 1})`
         });
 
         res.download(document.filePath, document.title);
@@ -203,7 +508,7 @@ router.get("/documents/:documentId/download", async (req, res) => {
 
 // ─────────────────────────────────────────────────
 // GET /api/documents/:documentId/view
-// Serves the document inline. Creates AuditLog entry.
+// Serves latest document inline. Creates AuditLog entry.
 // ─────────────────────────────────────────────────
 router.get("/documents/:documentId/view", async (req, res) => {
     try {
@@ -221,7 +526,7 @@ router.get("/documents/:documentId/view", async (req, res) => {
             actor,
             caseId: document.caseId,
             documentId,
-            details: `Viewed "${document.title}"`
+            details: `Viewed "${document.title}" (v${document.version || 1})`
         });
 
         res.sendFile(path.resolve(document.filePath));

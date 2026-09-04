@@ -4,13 +4,17 @@ const auditLogSchema = new mongoose.Schema(
     {
         actionType: {
             type: String,
-            enum: ["upload", "access", "share", "close", "verify"],
+            enum: ["upload", "version_upload", "access", "share", "close", "verify", "status_change"],
             required: true
         },
 
         actor: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: "User",
+            type: mongoose.Schema.Types.Mixed,
+            default: null
+        },
+
+        actorName: {
+            type: String,
             default: null
         },
 

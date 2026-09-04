@@ -190,8 +190,46 @@ export async function apiUploadDocument({ caseId, title, documentType, file, upl
   return res.json();
 }
 
+// POST /api/cases/:caseId/documents/:documentId/version (multipart)
+// Body: FormData with file, changeNote, uploadedBy
+export async function apiUploadDocumentVersion({ caseId, documentId, file, changeNote, uploadedBy }) {
+  const formData = new FormData();
+  formData.append("document", file);
+  if (changeNote) formData.append("changeNote", changeNote);
+  if (uploadedBy) formData.append("uploadedBy", uploadedBy);
+
+  const token = localStorage.getItem("dv_token");
+  const headers = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE}/api/cases/${caseId}/documents/${documentId}/version`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || "Version upload failed");
+  }
+  return res.json();
+}
+
+// GET /api/documents/:documentId/versions
+export async function apiFetchDocumentVersions(documentId) {
+  return apiFetch(`/api/documents/${documentId}/versions`);
+}
+
+// POST /api/documents/:documentId/versions/:version/verify
+export async function apiVerifyDocumentVersion(documentId, version, actor) {
+  return apiFetch(`/api/documents/${documentId}/versions/${version}/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ actor: actor || null }),
+  });
+}
+
 // POST /api/documents/:documentId/verify
-// Returns: { documentId, currentHash, blockchainHash, verified, status }
+// Returns: { documentId, currentHash, blockchainHash, verified, status, onChain }
 export async function apiVerifyDocument(documentId, actor) {
   return apiFetch(`/api/documents/${documentId}/verify`, {
     method: "POST",
@@ -203,6 +241,11 @@ export async function apiVerifyDocument(documentId, actor) {
 // GET /api/cases/:caseId/documents
 export async function apiFetchCaseDocuments(caseId) {
   return apiFetch(`/api/cases/${caseId}/documents`);
+}
+
+// GET /api/blockchain/status
+export async function apiFetchBlockchainStatus() {
+  return apiFetch(`/api/blockchain/status`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -222,3 +265,4 @@ export async function apiFetchAuditLogs({ caseId, limit } = {}) {
 export async function apiFetchCaseAudit(caseId) {
   return apiFetch(`/api/cases/${caseId}/audit`);
 }
+
