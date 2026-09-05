@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { UploadCloud, FilePlus2, ShieldCheck } from "lucide-react";
 import { useApp } from "../../context/AppContext";
 import { DOC_TYPES } from "../../data/mockData";
+import { getAllowedUploadTypes } from "../../utils/docPermissions";
 import { Label, Input, Select, Button } from "./Field";
 
 /**
@@ -20,8 +21,14 @@ export default function DocumentUpload({
   accentIcon: AccentIcon = UploadCloud,
 }) {
   const { currentUser, uploadDocument, createCase, notify, verifyDocument } = useApp();
+
+  // Restrict doc types to what this role is allowed to upload.
+  // Falls back to the full list if the role is unrecognized (safe default).
+  const allowedTypes = getAllowedUploadTypes(currentUser?.role);
+  const effectiveTypes = allowedTypes.length > 0 ? allowedTypes : DOC_TYPES;
+
   const [documentName, setDocumentName] = useState("");
-  const [docType, setDocType] = useState(DOC_TYPES[0]);
+  const [docType, setDocType] = useState(effectiveTypes[0] ?? DOC_TYPES[0]);
   const [caseId, setCaseId] = useState(cases[0]?.id || "");
   const [fileObj, setFileObj] = useState(null);   // stores the actual File object
   const [extra, setExtra] = useState({});
@@ -112,7 +119,7 @@ export default function DocumentUpload({
         <div>
           <Label>Document Type *</Label>
           <Select value={docType} onChange={(e) => setDocType(e.target.value)}>
-            {DOC_TYPES.map((t) => (
+            {effectiveTypes.map((t) => (
               <option key={t}>{t}</option>
             ))}
           </Select>

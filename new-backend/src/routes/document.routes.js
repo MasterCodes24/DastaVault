@@ -17,7 +17,7 @@ const {
     getNetworkStatus,
     getDocumentRecord
 } = require("../services/blockchain.service");
-const { canRoleUpdateDoc } = require("../utils/docPermissions.cjs");
+const { canRoleUpdateDoc, canRoleUploadDoc } = require("../utils/docPermissions.cjs");
 
 const router = express.Router();
 
@@ -87,6 +87,24 @@ router.post(
 
             if (!req.file) {
                 return res.status(400).json({ message: "Document file is required" });
+            }
+
+            // ── Role-based upload type guard ──────────────────────────────────
+            if (uploadedBy) {
+                const actor = await User.findOne({
+                    $or: [
+                        { _id: uploadedBy.length === 24 ? uploadedBy : null },
+                        { credentialId: uploadedBy }
+                    ]
+                });
+                if (actor) {
+                    const normalizedForCheck = normalizeDocType(documentType);
+                    if (!canRoleUploadDoc(actor.role, normalizedForCheck)) {
+                        return res.status(403).json({
+                            message: `Your role (${actor.role}) is not permitted to upload documents of type "${normalizedForCheck}".`
+                        });
+                    }
+                }
             }
 
             const documentId = "DOC-" + Date.now();
