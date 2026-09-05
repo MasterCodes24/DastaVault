@@ -6,6 +6,7 @@ const path = require("path");
 const Document = require("../models/Document");
 const Case = require("../models/Case");
 const AuditLog = require("../models/AuditLog");
+const User = require("../models/User");
 
 const { calculateFileHash } = require("../services/hash.service");
 const {
@@ -16,6 +17,7 @@ const {
     getNetworkStatus,
     getDocumentRecord
 } = require("../services/blockchain.service");
+const { canRoleUpdateDoc } = require("../utils/docPermissions.cjs");
 
 const router = express.Router();
 
@@ -184,12 +186,46 @@ router.post(
             const { caseId, documentId } = req.params;
             const { changeNote = "", uploadedBy = null } = req.body;
 
+            // ── Guard 1: Reason for update is mandatory (min 15 chars) ──────────
+            if (!changeNote || changeNote.trim().length < 15) {
+                return res.status(400).json({
+                    message: "A reason for update (minimum 15 characters) is required."
+                });
+            }
+
+            // ── Fetch document ───────────────────────────────────────────────────
             let document = await Document.findOne({ documentId, caseId });
             if (!document) {
                 document = await Document.findOne({ documentId });
             }
             if (!document) {
                 return res.status(404).json({ message: "Document not found" });
+            }
+
+            // ── Guard 2: Case hard-lock check ────────────────────────────────────
+            const parentCase = await Case.findOne({ caseId: document.caseId });
+            if (parentCase?.caseLocked) {
+                return res.status(423).json({
+                    message: "This case has been permanently sealed following a Verdict. No further document updates are permitted."
+                });
+            }
+
+            // ── Guard 3: Role-based permission check ─────────────────────────────
+            if (uploadedBy) {
+                const actor = await User.findOne({
+                    $or: [
+                        { _id: uploadedBy.length === 24 ? uploadedBy : null },
+                        { credentialId: uploadedBy }
+                    ]
+                });
+                if (actor) {
+                    const docType = document.documentType || document.docType;
+                    if (!canRoleUpdateDoc(actor.role, docType)) {
+                        return res.status(403).json({
+                            message: `Your role (${actor.role}) is not permitted to update documents of type "${docType}".`
+                        });
+                    }
+                }
             }
 
             if (!req.file) {
@@ -218,7 +254,7 @@ router.post(
                     blockNumber: blockchainRecord.blockNumber
                 },
                 uploadedBy,
-                changeNote: changeNote || `Version ${nextVersion} revision`,
+                changeNote: changeNote.trim(),
                 createdAt: new Date()
             };
 
@@ -249,6 +285,15 @@ router.post(
 
             await document.save();
 
+            // ── Verdict hard-lock: seal the case permanently ─────────────────────
+            const docType = document.documentType || document.docType;
+            if (docType === "Verdict" && parentCase && !parentCase.caseLocked) {
+                await Case.findOneAndUpdate(
+                    { caseId: document.caseId },
+                    { $set: { caseLocked: true } }
+                );
+            }
+
             // Audit log
             await createAuditLog({
                 actionType: "version_upload",
@@ -256,13 +301,14 @@ router.post(
                 caseId,
                 documentId,
                 blockchainRef: blockchainRecord.transactionId,
-                details: `Uploaded version ${nextVersion} for "${document.title}". Note: ${changeNote || "None"}`
+                details: `Uploaded version ${nextVersion} for "${document.title}". Note: ${changeNote.trim()}`
             });
 
             res.status(201).json({
                 message: `Version ${nextVersion} anchored successfully`,
                 document,
-                version: versionEntry
+                version: versionEntry,
+                caseLocked: docType === "Verdict"
             });
 
         } catch (error) {

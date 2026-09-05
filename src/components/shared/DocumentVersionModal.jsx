@@ -4,7 +4,6 @@ import {
   History,
   UploadCloud,
   FileText,
-  ShieldCheck,
   CheckCircle2,
   AlertTriangle,
   Download,
@@ -14,21 +13,24 @@ import {
   Check,
   Clock,
   User,
+  ShieldCheck,
+  ChevronDown,
+  Lock,
 } from "lucide-react";
 import Modal from "./Modal";
 import Badge from "./Badge";
-import { Label, Input, Button } from "./Field";
+import { Label, Button } from "./Field";
 import { formatDateTime } from "../../utils/format";
 import { useApp } from "../../context/AppContext";
 import { apiFetchDocumentVersions } from "../../api/apiClient";
+import { UPDATE_LEGAL_BASIS } from "../../utils/docPermissions";
 
 export default function DocumentVersionModal({ isOpen, onClose, document, initialTab = "history", caseItem }) {
-  const { uploadDocumentVersion, verifyDocumentVersion, blockchainStatus, getUserById, notify } = useApp();
-  const [activeTab, setActiveTab] = useState(initialTab); // 'history' | 'upload'
+  const { uploadDocumentVersion, verifyDocumentVersion, blockchainStatus, getUserById, currentUser, notify } = useApp();
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [currentDoc, setCurrentDoc] = useState(document);
   const [versions, setVersions] = useState([]);
   const [loadingVersions, setLoadingVersions] = useState(false);
-  const [verifyingVersion, setVerifyingVersion] = useState(null);
   const [verificationResults, setVerificationResults] = useState({});
   const [copiedHash, setCopiedHash] = useState(null);
 
@@ -39,14 +41,15 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    if (document) {
-      setCurrentDoc(document);
-    }
+    if (document) setCurrentDoc(document);
   }, [document]);
 
   useEffect(() => {
     if (isOpen && document?.documentId) {
       setActiveTab(initialTab);
+      setVerificationResults({});
+      setNewFile(null);
+      setChangeNote("");
       loadVersions();
     }
   }, [isOpen, document?.documentId, initialTab]);
@@ -55,44 +58,54 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
     setLoadingVersions(true);
     try {
       const data = await apiFetchDocumentVersions(document.documentId);
+      let sorted = [];
       if (data?.versions) {
-        // Sort descending by version number
-        const sorted = [...data.versions].sort((a, b) => (b.version || 0) - (a.version || 0));
-        setVersions(sorted);
+        sorted = [...data.versions].sort((a, b) => (b.version || 0) - (a.version || 0));
       } else if (document.versions?.length) {
-        setVersions([...document.versions].sort((a, b) => (b.version || 0) - (a.version || 0)));
+        sorted = [...document.versions].sort((a, b) => (b.version || 0) - (a.version || 0));
       } else {
-        // Fallback for mock documents
-        setVersions([
-          {
-            version: document.version || 1,
-            fileName: document.fileName || document.documentName,
-            hash: document.hash || "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            blockchain: document.blockchain || { transactionId: document.blockchainTxRef || "tx-v1-initial" },
-            uploadedBy: document.uploadedBy,
-            changeNote: "Initial document upload (v1)",
-            createdAt: document.uploadedAt || new Date().toISOString(),
-          },
-        ]);
+        sorted = [{
+          version: document.version || 1,
+          fileName: document.fileName || document.documentName,
+          hash: document.hash || "",
+          blockchain: document.blockchain || { transactionId: document.blockchainTxRef || null },
+          uploadedBy: document.uploadedBy,
+          changeNote: "Initial document upload (v1)",
+          createdAt: document.uploadedAt || new Date().toISOString(),
+        }];
+      }
+      setVersions(sorted);
+      // Auto-verify the latest version only
+      if (sorted.length > 0) {
+        autoVerifyLatest(sorted[0].version);
       }
     } catch {
-      if (document?.versions?.length) {
-        setVersions([...document.versions].sort((a, b) => (b.version || 0) - (a.version || 0)));
-      } else {
-        setVersions([
-          {
+      const fallback = document?.versions?.length
+        ? [...document.versions].sort((a, b) => (b.version || 0) - (a.version || 0))
+        : [{
             version: document.version || 1,
             fileName: document.fileName || document.documentName,
-            hash: document.hash || "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            blockchain: document.blockchain || { transactionId: document.blockchainTxRef || "tx-v1-initial" },
+            hash: document.hash || "",
+            blockchain: document.blockchain || { transactionId: document.blockchainTxRef || null },
             uploadedBy: document.uploadedBy,
             changeNote: "Initial document upload (v1)",
             createdAt: document.uploadedAt || new Date().toISOString(),
-          },
-        ]);
-      }
+          }];
+      setVersions(fallback);
+      if (fallback.length > 0) autoVerifyLatest(fallback[0].version);
     } finally {
       setLoadingVersions(false);
+    }
+  };
+
+  const autoVerifyLatest = async (verNum) => {
+    try {
+      const result = await verifyDocumentVersion(document.documentId, verNum);
+      if (result) {
+        setVerificationResults((prev) => ({ ...prev, [verNum]: result }));
+      }
+    } catch {
+      // Non-fatal — verification badge just won't show
     }
   };
 
@@ -102,25 +115,14 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
     setTimeout(() => setCopiedHash(null), 2000);
   };
 
-  const handleVerify = async (verNum) => {
-    setVerifyingVersion(verNum);
-    try {
-      const result = await verifyDocumentVersion(document.documentId, verNum);
-      if (result) {
-        setVerificationResults((prev) => ({
-          ...prev,
-          [verNum]: result,
-        }));
-      }
-    } finally {
-      setVerifyingVersion(null);
-    }
-  };
-
   const handleUploadNewVersion = async (e) => {
     e?.preventDefault?.();
     if (!newFile) {
       notify("Please select a file to upload as the updated revision.", "warn");
+      return;
+    }
+    if (changeNote.trim().length < 15) {
+      notify("Please provide a reason for the update (minimum 15 characters).", "warn");
       return;
     }
 
@@ -143,7 +145,7 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
         caseId: targetCaseId,
         documentId: docTarget.documentId,
         file: newFile,
-        changeNote: changeNote.trim() || `Updated revision`,
+        changeNote: changeNote.trim(),
       });
 
       if (result) {
@@ -170,11 +172,16 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
   if (!document) return null;
 
   const isSepolia = blockchainStatus?.networkName?.toLowerCase().includes("sepolia");
+  const isFormValid = newFile && changeNote.trim().length >= 15;
+  const docRole = currentUser?.role;
+  const legalBasis = docRole ? UPDATE_LEGAL_BASIS[docRole] : null;
+  const nextVer = ((currentDoc || document).version || 1) + 1;
 
   return (
-    <Modal open={isOpen} onClose={onClose} title="Document Version Control & Ledger" maxWidth="max-w-3xl">
+    <Modal open={isOpen} onClose={onClose} title="Document Revision History" maxWidth="max-w-3xl">
       <div className="space-y-5">
-        {/* Document Header Info */}
+
+        {/* Document Header */}
         <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-line bg-paper/60 p-4">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-ink-900 text-vault-cyan">
@@ -196,22 +203,17 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
             </div>
           </div>
 
-          <div className="flex items-center gap-2 text-right">
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
-                blockchainStatus?.isLive
-                  ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                  : "bg-amber-50 text-amber-700 border border-amber-200"
-              }`}
-            >
-              <span
-                className={`h-2 w-2 rounded-full ${
-                  blockchainStatus?.isLive ? "bg-emerald-500 animate-pulse" : "bg-amber-500"
-                }`}
-              />
-              {blockchainStatus?.networkName || "Checking Network"}
-            </span>
-          </div>
+          {/* Digitally Sealed pill — replaces raw network name */}
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
+              blockchainStatus?.isLive
+                ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                : "bg-amber-50 text-amber-700 border border-amber-200"
+            }`}
+          >
+            <span className={`h-2 w-2 rounded-full ${blockchainStatus?.isLive ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
+            {blockchainStatus?.isLive ? "Digitally Sealed" : "Sealing Pending"}
+          </span>
         </div>
 
         {/* Tab Switcher */}
@@ -219,34 +221,30 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
           <button
             onClick={() => setActiveTab("history")}
             className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-semibold transition ${
-              activeTab === "history"
-                ? "border-vault-cyan text-ink-900"
-                : "border-transparent text-ink-400 hover:text-ink-700"
+              activeTab === "history" ? "border-vault-cyan text-ink-900" : "border-transparent text-ink-400 hover:text-ink-700"
             }`}
           >
             <History size={16} />
-            Version History ({versions.length})
+            Revision History ({versions.length})
           </button>
           <button
             onClick={() => setActiveTab("upload")}
             className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-semibold transition ${
-              activeTab === "upload"
-                ? "border-vault-cyan text-ink-900"
-                : "border-transparent text-ink-400 hover:text-ink-700"
+              activeTab === "upload" ? "border-vault-cyan text-ink-900" : "border-transparent text-ink-400 hover:text-ink-700"
             }`}
           >
             <UploadCloud size={16} />
-            Upload New Version
+            Submit New Revision
           </button>
         </div>
 
-        {/* Tab 1: Version History */}
+        {/* Tab 1: Revision History */}
         {activeTab === "history" && (
           <div className="space-y-3">
             {loadingVersions ? (
-              <div className="py-12 text-center text-sm text-ink-400">Loading version records from blockchain…</div>
+              <div className="py-12 text-center text-sm text-ink-400">Loading revision records…</div>
             ) : versions.length === 0 ? (
-              <div className="py-10 text-center text-sm text-ink-400">No version history found.</div>
+              <div className="py-10 text-center text-sm text-ink-400">No revision history found.</div>
             ) : (
               <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
                 {versions.map((ver, idx) => {
@@ -259,33 +257,45 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
                     <div
                       key={ver.version}
                       className={`relative rounded-xl border p-4 transition ${
-                        isLatest
-                          ? "border-vault-cyan/40 bg-vault-cyan/[0.02] shadow-sm"
-                          : "border-line bg-white"
+                        isLatest ? "border-vault-cyan/40 bg-vault-cyan/[0.02] shadow-sm" : "border-line bg-white"
                       }`}
                     >
                       <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="inline-flex items-center justify-center rounded-lg bg-ink-900 px-2.5 py-1 text-xs font-bold text-vault-cyan">
                             v{ver.version}
                           </span>
                           {isLatest && <Badge tone="success">Current / Active</Badge>}
+
+                          {/* Integrity badge — auto-verified, no button needed */}
+                          {isLatest && (
+                            verResult ? (
+                              verResult.verified ? (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 border border-emerald-200">
+                                  <CheckCircle2 size={11} className="text-emerald-600" />
+                                  Verified Authentic
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700 border border-rose-200">
+                                  <AlertTriangle size={11} className="text-rose-600" />
+                                  Integrity Warning
+                                </span>
+                              )
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-ink-50 px-2 py-0.5 text-[11px] font-medium text-ink-400">
+                                <ShieldCheck size={11} />
+                                Verifying…
+                              </span>
+                            )
+                          )}
+
                           <span className="text-sm font-semibold text-ink-900">
                             {ver.fileName || currentDoc?.documentName || document.documentName}
                           </span>
                         </div>
 
-                        {/* Actions */}
+                        {/* View / Download actions */}
                         <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => handleVerify(ver.version)}
-                            disabled={verifyingVersion === ver.version}
-                            className="flex items-center gap-1 rounded-lg border border-vault-cyan/30 bg-vault-cyan/10 px-2.5 py-1 text-xs font-semibold text-vault-cyanDark hover:bg-vault-cyan/20 disabled:opacity-50"
-                          >
-                            <ShieldCheck size={13} />
-                            {verifyingVersion === ver.version ? "Verifying…" : "Verify Hash"}
-                          </button>
-
                           <a
                             href={`http://localhost:5000/api/documents/${document.documentId}/versions/${ver.version}/view`}
                             target="_blank"
@@ -295,7 +305,6 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
                             <Eye size={13} />
                             View
                           </a>
-
                           <a
                             href={`http://localhost:5000/api/documents/${document.documentId}/versions/${ver.version}/download`}
                             className="flex items-center gap-1 rounded-lg border border-line bg-white px-2.5 py-1 text-xs font-semibold text-ink-600 hover:bg-paper/70"
@@ -309,97 +318,65 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
                       {/* Change Note */}
                       {ver.changeNote && (
                         <p className="mt-2 rounded-lg bg-paper/60 px-3 py-1.5 text-xs text-ink-700">
-                          <span className="font-semibold text-ink-900">Revision Note:</span> {ver.changeNote}
+                          <span className="font-semibold text-ink-900">Reason for update:</span> {ver.changeNote}
                         </p>
                       )}
 
-                      {/* Verification Banner if checked */}
-                      {verResult && (
-                        <div
-                          className={`mt-2 flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium ${
-                            verResult.verified
-                              ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
-                              : "bg-rose-50 text-rose-800 border border-rose-200"
-                          }`}
-                        >
-                          {verResult.verified ? (
-                            <>
-                              <CheckCircle2 size={14} className="text-emerald-600" />
-                              <span>
-                                Match Confirmed: File is intact and verified against secure ledger.
-                              </span>
-                            </>
-                          ) : (
-                            <>
-                              <AlertTriangle size={14} className="text-rose-600" />
-                              <span>TAMPER ALERT: File has been modified or corrupted!</span>
-                            </>
-                          )}
+                      {/* Tamper warning for non-latest (shown only if we have a bad result somehow) */}
+                      {!isLatest && verResult && !verResult.verified && (
+                        <div className="mt-2 flex items-center gap-2 rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-800 border border-rose-200">
+                          <AlertTriangle size={14} className="text-rose-600" />
+                          <span>INTEGRITY ALERT: This revision may have been tampered with.</span>
                         </div>
                       )}
 
-                      {/* Metadata Grid */}
-                      <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
-                        {/* SHA-256 Hash */}
-                        <div className="flex items-center justify-between rounded-md bg-ink-50 px-2.5 py-1.5">
-                          <span className="text-ink-400">SHA-256:</span>
-                          <div className="flex items-center gap-1.5 font-mono text-ink-700">
-                            <span className="truncate max-w-[140px]" title={ver.hash}>
-                              {ver.hash ? `${ver.hash.substring(0, 10)}…${ver.hash.slice(-8)}` : "None"}
-                            </span>
-                            <button
-                              onClick={() => handleCopy(ver.hash, `hash-${ver.version}`)}
-                              title="Copy SHA-256 Hash"
-                              className="text-ink-400 hover:text-ink-900"
-                            >
-                              {copiedHash === `hash-${ver.version}` ? (
-                                <Check size={12} className="text-emerald-600" />
-                              ) : (
-                                <Copy size={12} />
+                      {/* Collapsible chain-of-custody proof */}
+                      <details className="mt-3 group">
+                        <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] font-semibold text-ink-400 hover:text-ink-700 select-none">
+                          <ChevronDown size={13} className="transition-transform group-open:rotate-180" />
+                          Digital Chain of Custody Proof
+                        </summary>
+                        <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+                          {/* SHA-256 */}
+                          <div className="flex items-center justify-between rounded-md bg-ink-50 px-2.5 py-1.5">
+                            <span className="text-ink-400">SHA-256:</span>
+                            <div className="flex items-center gap-1.5 font-mono text-ink-700">
+                              <span className="truncate max-w-[130px]" title={ver.hash}>
+                                {ver.hash ? `${ver.hash.substring(0, 10)}…${ver.hash.slice(-8)}` : "None"}
+                              </span>
+                              {ver.hash && (
+                                <button onClick={() => handleCopy(ver.hash, `hash-${ver.version}`)} title="Copy hash" className="text-ink-400 hover:text-ink-900">
+                                  {copiedHash === `hash-${ver.version}` ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+                                </button>
                               )}
-                            </button>
+                            </div>
+                          </div>
+                          {/* Transaction Ref */}
+                          <div className="flex items-center justify-between rounded-md bg-ink-50 px-2.5 py-1.5">
+                            <span className="text-ink-400">Custody Ref:</span>
+                            <div className="flex items-center gap-1.5 font-mono text-ink-700">
+                              <span className="truncate max-w-[130px]" title={txHash}>
+                                {txHash ? `${txHash.substring(0, 10)}…${txHash.slice(-8)}` : "Pending"}
+                              </span>
+                              {txHash && (
+                                <button onClick={() => handleCopy(txHash, `tx-${ver.version}`)} title="Copy custody ref" className="text-ink-400 hover:text-ink-900">
+                                  {copiedHash === `tx-${ver.version}` ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+                                </button>
+                              )}
+                              {isSepolia && txHash && !txHash.startsWith("sim-") && (
+                                <a href={`https://sepolia.etherscan.io/tx/${txHash}`} target="_blank" rel="noopener noreferrer" title="View on Etherscan" className="text-vault-cyanDark hover:text-ink-900">
+                                  <ExternalLink size={12} />
+                                </a>
+                              )}
+                            </div>
                           </div>
                         </div>
-
-                        {/* Transaction Ref */}
-                        <div className="flex items-center justify-between rounded-md bg-ink-50 px-2.5 py-1.5">
-                          <span className="text-ink-400">Transaction Ref:</span>
-                          <div className="flex items-center gap-1.5 font-mono text-ink-700">
-                            <span className="truncate max-w-[140px]" title={txHash}>
-                              {txHash ? `${txHash.substring(0, 10)}…${txHash.slice(-8)}` : "Pending"}
-                            </span>
-                            {txHash && (
-                              <button
-                                onClick={() => handleCopy(txHash, `tx-${ver.version}`)}
-                                title="Copy Transaction Reference"
-                                className="text-ink-400 hover:text-ink-900"
-                              >
-                                {copiedHash === `tx-${ver.version}` ? (
-                                  <Check size={12} className="text-emerald-600" />
-                                ) : (
-                                  <Copy size={12} />
-                                )}
-                              </button>
-                            )}
-                            {isSepolia && txHash && !txHash.startsWith("sim-") && (
-                              <a
-                                href={`https://sepolia.etherscan.io/tx/${txHash}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                title="View on Sepolia Etherscan"
-                                className="text-vault-cyanDark hover:text-ink-900"
-                              >
-                                <ExternalLink size={12} />
-                              </a>
-                            )}
-                          </div>
-                        </div>
-                      </div>
+                      </details>
 
                       <div className="mt-2 flex items-center justify-between text-[11px] text-ink-400">
                         <span className="flex items-center gap-1">
                           <User size={12} />
-                          Uploaded by: {uploader?.name || ver.uploadedBy || "Officer / System"}
+                          Filed by: {uploader?.name || ver.uploadedBy || "Officer / System"}
                         </span>
                         <span className="flex items-center gap-1 font-mono">
                           <Clock size={12} />
@@ -414,31 +391,33 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
           </div>
         )}
 
-        {/* Tab 2: Upload New Version Form */}
+        {/* Tab 2: Submit New Revision */}
         {activeTab === "upload" && (
           <form onSubmit={handleUploadNewVersion} noValidate className="space-y-4">
+
+            {/* Info banner — plain language, no jargon */}
             <div className="rounded-xl border border-vault-cyan/30 bg-vault-cyan/5 p-4 text-xs text-ink-600 leading-relaxed">
-              <strong className="text-vault-cyanDark font-semibold">Version Increment:</strong> Uploading an updated
-              file will automatically advance this document to{" "}
-              <span className="font-bold text-ink-900">v{((currentDoc || document).version || 1) + 1}</span>. The cryptographic SHA-256
-              hash of the new revision will be anchored permanently into the smart contract registry. Previous versions
-              remain immutable and accessible in the history tab.
+              <strong className="text-vault-cyanDark font-semibold">Submitting Revision v{nextVer}:</strong> Uploading a
+              revised file will register this document as{" "}
+              <span className="font-bold text-ink-900">Revision {nextVer}</span>. The previous version remains
+              permanently on record and cannot be altered. A mandatory reason for the update is required.
+              {legalBasis && (
+                <p className="mt-1.5 text-ink-400">
+                  <span className="font-semibold text-ink-600">Legal basis:</span> {legalBasis}
+                </p>
+              )}
             </div>
 
+            {/* File picker */}
             <div>
-              <Label htmlFor="version-file-input">Select Replacement / Revision File *</Label>
+              <Label htmlFor="version-file-input">Select Revised File *</Label>
               <div
                 onClick={() => fileInputRef.current?.click()}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
                 onDrop={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  if (e.dataTransfer.files?.[0]) {
-                    setNewFile(e.dataTransfer.files[0]);
-                  }
+                  if (e.dataTransfer.files?.[0]) setNewFile(e.dataTransfer.files[0]);
                 }}
                 className="group flex cursor-pointer flex-col items-center justify-center gap-2.5 rounded-xl border-2 border-dashed border-line bg-paper/60 p-6 text-center transition hover:border-vault-cyan hover:bg-vault-cyan/5"
               >
@@ -449,15 +428,13 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
                   <div className="space-y-1">
                     <p className="font-display text-sm font-semibold text-ink-900 truncate max-w-sm">{newFile.name}</p>
                     <p className="text-xs text-vault-cyanDark font-medium">
-                      {(newFile.size / 1024).toFixed(1)} KB · Ready to anchor · Click to change
+                      {(newFile.size / 1024).toFixed(1)} KB · Click to change
                     </p>
                   </div>
                 ) : (
                   <div className="space-y-1">
-                    <p className="text-sm font-semibold text-ink-800">
-                      Click to browse or drag and drop your updated file here
-                    </p>
-                    <p className="text-xs text-ink-400">Supported: PDF, DOCX, TXT, Images, Forensic files</p>
+                    <p className="text-sm font-semibold text-ink-800">Click to browse or drag and drop the revised file</p>
+                    <p className="text-xs text-ink-400">Supported: PDF, DOCX, TXT, Images</p>
                   </div>
                 )}
                 <input
@@ -470,32 +447,47 @@ export default function DocumentVersionModal({ isOpen, onClose, document, initia
               </div>
             </div>
 
+            {/* Reason for update — mandatory, min 15 chars */}
             <div>
-              <Label>Revision Note / Reason for Update</Label>
-              <Input
+              <div className="flex items-center justify-between mb-1">
+                <Label>Reason for Update *</Label>
+                <span className={`text-[11px] font-medium ${changeNote.trim().length >= 15 ? "text-emerald-600" : "text-ink-400"}`}>
+                  {changeNote.trim().length} / 15 characters minimum
+                </span>
+              </div>
+              <textarea
                 value={changeNote}
                 onChange={(e) => setChangeNote(e.target.value)}
-                placeholder="e.g. Added witness supplementary interview transcript"
+                placeholder="e.g. Added supplementary witness interview transcript from 04 Sep hearing"
+                rows={3}
+                className="w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm text-ink-900 placeholder:text-ink-300 focus:border-vault-cyan focus:outline-none focus:ring-2 focus:ring-vault-cyan/30 resize-none"
               />
+              {changeNote.length > 0 && changeNote.trim().length < 15 && (
+                <p className="mt-1 text-[11px] text-amber-600">Please elaborate — {15 - changeNote.trim().length} more character{15 - changeNote.trim().length !== 1 ? "s" : ""} needed.</p>
+              )}
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setActiveTab("history")}>
                 Cancel
               </Button>
-              <Button type="submit" variant="accent" disabled={isSubmitting}>
+              <Button type="submit" variant="accent" disabled={isSubmitting || !isFormValid}>
                 {isSubmitting ? (
-                  "Anchoring to Blockchain…"
+                  <span className="flex items-center gap-2">
+                    <Lock size={14} className="animate-pulse" />
+                    Registering Revision…
+                  </span>
                 ) : (
                   <>
                     <GitBranch size={16} />
-                    Anchor v{((currentDoc || document).version || 1) + 1} on Blockchain
+                    Submit Revision v{nextVer}
                   </>
                 )}
               </Button>
             </div>
           </form>
         )}
+
       </div>
     </Modal>
   );

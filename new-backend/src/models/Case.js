@@ -118,6 +118,13 @@ const caseSchema = new mongoose.Schema(
             default: 0,
             min: 0,
             max: 5
+        },
+
+        // Hard-locked after a Judge uploads a Verdict update.
+        // When true, no further document uploads or version updates are permitted.
+        caseLocked: {
+            type: Boolean,
+            default: false
         }
     },
     {

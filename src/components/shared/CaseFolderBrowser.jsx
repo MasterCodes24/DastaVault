@@ -19,6 +19,7 @@ import DocumentVersionModal from "./DocumentVersionModal";
 import CaseAuditTrail from "./CaseAuditTrail";
 import { formatDateTime } from "../../utils/format";
 import { mockFetchFir } from "../../utils/mockApi";
+import { canUserUpdateDoc } from "../../utils/docPermissions";
 
 export default function CaseFolderBrowser({ cases, title = "Case Folders", extraPanel }) {
   const { getCaseDocuments, getUserById, verifyDocument, blockchainStatus, currentUser } = useApp();
@@ -261,7 +262,9 @@ export default function CaseFolderBrowser({ cases, title = "Case Folders", extra
                                 const dbid = currentUser?.dbId;
                                 const upBy = d.uploadedBy;
                                 const isOwner = upBy && (upBy === uid || upBy === cred || upBy === dbid);
-                                return isOwner ? (
+                                const docType = d.docType || d.documentType;
+                                const canUpdate = isOwner && canUserUpdateDoc(currentUser?.role, docType);
+                                return canUpdate ? (
                                   <button
                                     onClick={() => setVersionModalDoc({ doc: d, tab: "upload" })}
                                     title="Upload new version"
